@@ -94,12 +94,16 @@ pre {
 <h1>wlanscout USB test</h1>
 <div class="dim">
 Plug the sensor's USB-C port marked <b>USB</b> (not UART) into the phone,
-then connect. Chrome on Android uses WebUSB, desktop browsers Web Serial.
+then connect. On Android try WebUSB first; "Show all USB devices"
+tells whether the phone sees the board at all.
 </div>
 
 <div class="box">
-<button id="connect">Connect sensor</button>
+<button id="connectUsb">Connect via WebUSB</button>
+<button id="connectSerial">Connect via Web Serial</button>
 <button id="disconnect" disabled>Disconnect</button>
+<br>
+<button id="listUsb">Show all USB devices</button>
 <div>State: <span id="state">not connected</span>
 <span class="dim" id="api"></span></div>
 </div>
@@ -151,11 +155,9 @@ let writer = null;
 let pending = [];
 let waiting = null;
 
-const serialApi = navigator.serial || polyfill;
-
-$("api").textContent = navigator.serial
-    ? "(Web Serial)"
-    : (navigator.usb ? "(WebUSB polyfill)" : "(no WebUSB in this browser)");
+$("api").textContent = "(" + [
+    navigator.usb ? "WebUSB" : "no WebUSB",
+    navigator.serial ? "Web Serial" : "no Web Serial"].join(", ") + ")";
 
 function setState(text, cls)
 {
@@ -165,7 +167,8 @@ function setState(text, cls)
 
 function setConnected(on)
 {
-    $("connect").disabled = on;
+    $("connectUsb").disabled = on;
+    $("connectSerial").disabled = on;
     $("disconnect").disabled = !on;
     document.querySelectorAll(".req").forEach(b => b.disabled = !on);
 }
@@ -331,12 +334,12 @@ function showNetworks(list)
         });
 }
 
-$("connect").onclick = async () =>
+// Espressif's USB Serial/JTAG: VID 0x303A
+async function connect(api, filters)
 {
     try
     {
-        // Espressif's USB Serial/JTAG: VID 0x303A
-        port = await serialApi.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+        port = await api.requestPort({ filters });
 
         await port.open({ baudRate: 115200 });
 
@@ -349,6 +352,41 @@ $("connect").onclick = async () =>
         readLoop();
 
         run("/api/status");
+    }
+    catch (e)
+    {
+        setState(e.message, "bad");
+    }
+}
+
+// WebUSB through Google's polyfill: the path Chrome on Android
+// has had for long
+$("connectUsb").onclick = () =>
+    navigator.usb
+        ? connect(polyfill, [{ usbVendorId: 0x303a }])
+        : setState("this browser has no WebUSB", "bad");
+
+// Chrome's own Web Serial, no filter: shows every port it offers
+$("connectSerial").onclick = () =>
+    navigator.serial
+        ? connect(navigator.serial, [])
+        : setState("this browser has no Web Serial", "bad");
+
+// Does the phone see the board at all? Any USB device, no filter
+$("listUsb").onclick = async () =>
+{
+    if (!navigator.usb)
+        return setState("this browser has no WebUSB", "bad");
+
+    try
+    {
+        const d = await navigator.usb.requestDevice({ filters: [] });
+
+        setState("USB device: " +
+            d.vendorId.toString(16).padStart(4, "0") + ":" +
+            d.productId.toString(16).padStart(4, "0") + " " +
+            (d.manufacturerName || "") + " " + (d.productName || ""),
+            "ok");
     }
     catch (e)
     {
