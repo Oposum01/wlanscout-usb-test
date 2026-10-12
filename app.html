@@ -57,17 +57,18 @@ h1 {
     white-space: pre;
 }
 
+/* Short messages only ("Connection lost", a refused command);
+   the padded fields are in the version badge. A long one wraps
+   instead of running off a phone screen */
 #status {
     color: #aaa;
     font-size: 13px;
     flex: 1;
-
-    /* Monospace plus preserved spaces: the fields are padded
-       to a fixed width so the bar does not jump around every
-       time the channel number or a counter changes length */
+    min-width: 0;
     font-family: "DejaVu Sans Mono", "Liberation Mono",
                  Consolas, monospace;
-    white-space: pre;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .section {
@@ -3129,6 +3130,14 @@ function apiLink(event, a)
     apiDownload(a.getAttribute("href"));
 
     return false;
+}
+
+// What the status line says when the sensor does not answer
+function offlineText()
+{
+    return isStaticPage() && !usbLink
+        ? "Not connected: plug in the sensor's USB port and press USB"
+        : "Connection lost";
 }
 
 function showUsbState(text)
@@ -9295,8 +9304,7 @@ async function updateLive()
     }
     catch (e)
     {
-        document.getElementById("status").innerText =
-            "Connection lost";
+        document.getElementById("status").innerText = offlineText();
     }
 }
 
@@ -9997,11 +10005,7 @@ async function updateStatus()
     {
         deviceOnline = false;
 
-        document.getElementById("status").innerText =
-            isStaticPage() && !usbLink
-                ? "Not connected: plug in the sensor's USB port " +
-                  "and press USB"
-                : "Connection lost";
+        document.getElementById("status").innerText = offlineText();
     }
 }
 
