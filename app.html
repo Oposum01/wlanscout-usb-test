@@ -3231,6 +3231,9 @@ async function toggleUsb()
         showUsbState("connected over USB");
         clearOfflineText();
 
+        // The one at page load went nowhere, there was no sensor
+        sendBrowserTime();
+
         // Fetch everything now instead of waiting for the poll
         loadChannelPlan();
         updateStatus();
@@ -4237,6 +4240,7 @@ function matchesFilter(n)
         n.mbo ? mboText(n) : "",
         n.hp ? "printer " + printerText(n) : "",
         n.wpsname ? "wps device " + n.wpsname : "",
+        n.wpsdev ? "wps " + wpsDeviceText(n) : "",
         omnText(n) ? "operating mode " + omnText(n) : "",
         isNan(n) ? "nan cluster wi-fi aware" : "",
         quietText(n) ? "quiet " + quietText(n) : "",
@@ -5710,6 +5714,31 @@ function omnText(n)
     return width + " MHz, " + nss + " stream" + (nss > 1 ? "s" : "");
 }
 
+/*
+ * Manufacturer, model name and model number from WPS, "HP G5J38A";
+ * a model name that already holds the number keeps it once. The
+ * firmware never reads the serial number.
+ */
+function wpsDeviceText(n)
+{
+    if (!n.wpsdev)
+        return "";
+
+    const [maker, model, number] = n.wpsdev;
+
+    const parts = [maker];
+
+    if (model && !(maker && model.startsWith(maker)))
+        parts.push(model);
+    else if (model)
+        parts[0] = model;
+
+    if (number && !parts.some(p => p && p.includes(number)))
+        parts.push(number);
+
+    return parts.filter(p => p).join(" ");
+}
+
 // HP printers name their model in HP's element; not the serial
 function printerText(n)
 {
@@ -5974,9 +6003,10 @@ function networkTooltip(n)
             n.akm ? "AKM " + escapeHTML(n.akm) : "",
             "cipher " + escapeHTML(cipherText(n)),
             "PMF " + pmfText(n)])],
-        ["WPS", n.wps || n.wpsname ? join([
+        ["WPS", n.wps || n.wpsname || n.wpsdev ? join([
             n.wps ? "active" : "",
-            n.wpsname ? "device " + escapeHTML(n.wpsname) : ""]) : ""],
+            n.wpsname ? "device " + escapeHTML(n.wpsname) : "",
+            escapeHTML(wpsDeviceText(n))]) : ""],
         ["Also", join([
             n.preauth ? "pre-authentication" : "",
             n.hs20 ? "Hotspot 2.0" : "",
@@ -10867,9 +10897,16 @@ function wrapTables()
 
 wrapTables();
 
-// Hand the browser clock over once, so the pcap carries real
+// Hand the browser clock over, so the pcap carries real
 // timestamps instead of time since boot
-queueCommand("/api/time?epoch=" + Math.floor(Date.now() / 1000));
+function sendBrowserTime()
+{
+    queueCommand("/api/time?epoch=" + Math.floor(Date.now() / 1000));
+}
+
+// A static copy has no sensor yet: it sends the time on connecting
+if (!isStaticPage())
+    sendBrowserTime();
 
 /*
  * Always land in Wi-Fi mode when the page is opened. An
