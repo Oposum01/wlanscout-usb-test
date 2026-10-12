@@ -12,7 +12,10 @@
       content="width=device-width,initial-scale=1">
 
 <title>ESP32-C5 wlanscout+</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#1c1c1c">
 
 
 <style>
@@ -10819,6 +10822,12 @@ pollLoop();
 
 </script>
 
+
+<script>
+// Static copy only: keeps the page for offline use
+if ("serviceWorker" in navigator)
+    navigator.serviceWorker.register("sw.js").catch(() => { });
+</script>
 </body>
 
 </html>
