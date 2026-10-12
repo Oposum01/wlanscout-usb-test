@@ -112,6 +112,11 @@ h1 {
     cursor: pointer;
 }
 
+/* A label with a short form for phones */
+.narrowLabel {
+    display: none;
+}
+
 .tab.active {
     background: #444;
     color: white;
@@ -476,6 +481,19 @@ tbody tr.assocSeen.highlight {
     .section {
         margin: 8px;
         padding: 8px;
+    }
+
+    /* The four view tabs on one line */
+    .tab {
+        padding: 7px 10px;
+    }
+
+    .wideLabel {
+        display: none;
+    }
+
+    .narrowLabel {
+        display: inline;
     }
 
     /* Six buttons do not fit a phone held upright: break within
@@ -926,7 +944,7 @@ BSSIDs
 
 <button class="tab"
         onclick="window.showView('spectrumView',this)">
-RSSI spectrum
+<span class="wideLabel">RSSI spectrum</span><span class="narrowLabel">RSSI spec.</span>
 </button>
 
 <button class="tab"
@@ -936,7 +954,7 @@ Stations
 
 <button class="tab"
         onclick="window.showView('catalogView',this)">
-IE catalog
+<span class="wideLabel">IE catalog</span><span class="narrowLabel">IE cat.</span>
 </button>
 
 </div>
