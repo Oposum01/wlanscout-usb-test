@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wlanscout USB test</title>
+<style>
+:root {
+    --bg: #111;
+    --panel: #1b1b1b;
+    --line: #333;
+    --text: #ddd;
+    --dim: #888;
+    --ok: #8fbf8f;
+    --bad: #d08080;
+    --accent: #7aaed0;
+}
+
+body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 system-ui, sans-serif;
+}
+
+h1 {
+    font-size: 18px;
+    margin: 0 0 4px;
+}
+
+.dim {
+    color: var(--dim);
+}
+
+.box {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px;
+    margin: 12px 0;
+}
+
+button {
+    background: #2a2a2a;
+    border: 1px solid #555;
+    color: var(--text);
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin: 0 6px 6px 0;
+    font-size: 14px;
+}
+
+button:disabled {
+    opacity: 0.4;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+}
+
+td, th {
+    text-align: left;
+    padding: 3px 6px;
+    border-bottom: 1px solid var(--line);
+}
+
+.scroll {
+    overflow-x: auto;
+}
+
+pre {
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-size: 12px;
+    margin: 0;
+    max-height: 240px;
+    overflow: auto;
+}
+
+#state.ok {
+    color: var(--ok);
+}
+
+#state.bad {
+    color: var(--bad);
+}
+</style>
+</head>
+<body>
+
+<h1>wlanscout USB test</h1>
+<div class="dim">
+Plug the sensor's USB-C port marked <b>USB</b> (not UART) into the phone,
+then connect. Chrome on Android uses WebUSB, desktop browsers Web Serial.
+</div>
+
+<div class="box">
+<button id="connect">Connect sensor</button>
+<button id="disconnect" disabled>Disconnect</button>
+<div>State: <span id="state">not connected</span>
+<span class="dim" id="api"></span></div>
+</div>
+
+<div class="box">
+<button class="req" data-path="/api/status" disabled>status</button>
+<button class="req" data-path="/api/networks" disabled>networks</button>
+<button class="req" data-path="/api/clients" disabled>clients</button>
+<button class="req" data-path="/api/live" disabled>live</button>
+<label><input type="checkbox" id="poll"> networks every 2 s</label>
+</div>
+
+<div class="box">
+<b>Timings</b>
+<div class="scroll">
+<table>
+<thead><tr><th>Path</th><th>Bytes</th><th>ms</th><th>kB/s</th><th>Result</th></tr></thead>
+<tbody id="timings"></tbody>
+</table>
+</div>
+</div>
+
+<div class="box">
+<b>Networks</b> <span class="dim" id="netinfo"></span>
+<div class="scroll">
+<table>
+<thead><tr><th>SSID</th><th>BSSID</th><th>Ch</th><th>RSSI</th></tr></thead>
+<tbody id="nets"></tbody>
+</table>
+</div>
+</div>
+
+<div class="box">
+<b>Last answer</b>
+<pre id="raw"></pre>
+</div>
+
+<script type="module">
+import { serial as polyfill }
+    from "https://cdn.jsdelivr.net/npm/web-serial-polyfill@1.0.15/dist/serial.js";
+
+const $ = id => document.getElementById(id);
+
+let port = null;
+let reader = null;
+let writer = null;
+
+// Bytes received but not yet part of a finished answer
+let pending = [];
+let waiting = null;
+
+const serialApi = navigator.serial || polyfill;
+
+$("api").textContent = navigator.serial
+    ? "(Web Serial)"
+    : (navigator.usb ? "(WebUSB polyfill)" : "(no WebUSB in this browser)");
+
+function setState(text, cls)
+{
+    $("state").textContent = text;
+    $("state").className = cls || "";
+}
+
+function setConnected(on)
+{
+    $("connect").disabled = on;
+    $("disconnect").disabled = !on;
+    document.querySelectorAll(".req").forEach(b => b.disabled = !on);
+}
+
+// Frames: 0x02 JSON 0x03, or 0x15 for an unknown path. Bytes
+// outside a frame are dropped.
+function feed(chunk)
+{
+    for (const b of chunk)
+    {
+        if (!waiting)
+            continue;
+
+        if (b === 0x15 && !waiting.started)
+        {
+            finish(null);
+            continue;
+        }
+
+        if (b === 0x02)
+        {
+            waiting.started = true;
+            pending = [];
+            continue;
+        }
+
+        if (b === 0x03 && waiting.started)
+        {
+            finish(new TextDecoder().decode(new Uint8Array(pending)));
+            continue;
+        }
+
+        if (waiting.started)
+            pending.push(b);
+    }
+}
+
+function finish(text)
+{
+    const w = waiting;
+
+    waiting = null;
+    pending = [];
+    clearTimeout(w.timer);
+    w.resolve(text);
+}
+
+async function readLoop()
+{
+    try
+    {
+        while (true)
+        {
+            const { value, done } = await reader.read();
+
+            if (done)
+                break;
+
+            if (value)
+                feed(value);
+        }
+    }
+    catch (e)
+    {
+        setState("read error: " + e.message, "bad");
+    }
+}
+
+function request(path)
+{
+    if (waiting)
+        return Promise.reject(new Error("busy"));
+
+    return new Promise((resolve, reject) =>
+    {
+        waiting = {
+            started: false,
+            resolve,
+            timer: setTimeout(() =>
+            {
+                waiting = null;
+                reject(new Error("timeout"));
+            }, 15000)
+        };
+
+        writer.write(new TextEncoder().encode("GET " + path + "\n"))
+            .catch(e => { waiting = null; reject(e); });
+    });
+}
+
+async function run(path)
+{
+    const t0 = performance.now();
+    let row = [path, "", "", "", ""];
+
+    try
+    {
+        const text = await request(path);
+        const ms = performance.now() - t0;
+
+        if (text === null)
+        {
+            row[4] = "unknown path";
+        }
+        else
+        {
+            const bytes = new TextEncoder().encode(text).length;
+            const json = JSON.parse(text);
+
+            row = [path, bytes, ms.toFixed(0),
+                   (bytes / ms).toFixed(1), "ok"];
+
+            $("raw").textContent = text.slice(0, 4000);
+
+            if (json.networks)
+                showNetworks(json.networks);
+        }
+    }
+    catch (e)
+    {
+        row[4] = e.message;
+    }
+
+    const tr = document.createElement("tr");
+
+    row.forEach(v =>
+    {
+        const td = document.createElement("td");
+        td.textContent = v;
+        tr.appendChild(td);
+    });
+
+    $("timings").prepend(tr);
+
+    while ($("timings").children.length > 20)
+        $("timings").lastChild.remove();
+}
+
+function showNetworks(list)
+{
+    $("netinfo").textContent = list.length + " networks";
+
+    const body = $("nets");
+
+    body.innerHTML = "";
+
+    list.slice()
+        .sort((a, b) => String(a.ssid).localeCompare(String(b.ssid)) ||
+                        a.bssid.localeCompare(b.bssid))
+        .forEach(n =>
+        {
+            const tr = document.createElement("tr");
+
+            [n.ssid || "<hidden>", n.bssid, n.channel, n.rssi + " dBm"]
+                .forEach(v =>
+                {
+                    const td = document.createElement("td");
+                    td.textContent = v;
+                    tr.appendChild(td);
+                });
+
+            body.appendChild(tr);
+        });
+}
+
+$("connect").onclick = async () =>
+{
+    try
+    {
+        // Espressif's USB Serial/JTAG: VID 0x303A
+        port = await serialApi.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+
+        await port.open({ baudRate: 115200 });
+
+        reader = port.readable.getReader();
+        writer = port.writable.getWriter();
+
+        setConnected(true);
+        setState("connected", "ok");
+
+        readLoop();
+
+        run("/api/status");
+    }
+    catch (e)
+    {
+        setState(e.message, "bad");
+    }
+};
+
+$("disconnect").onclick = async () =>
+{
+    $("poll").checked = false;
+
+    try
+    {
+        await reader.cancel();
+        reader.releaseLock();
+        writer.releaseLock();
+        await port.close();
+    }
+    catch (e)
+    {
+    }
+
+    setConnected(false);
+    setState("not connected");
+};
+
+document.querySelectorAll(".req").forEach(b =>
+    b.onclick = () => run(b.dataset.path));
+
+setInterval(() =>
+{
+    if ($("poll").checked && writer && !waiting)
+        run("/api/networks");
+}, 2000);
+</script>
+</body>
+</html>
