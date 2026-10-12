@@ -147,12 +147,10 @@ tells whether the phone sees the board at all.
 </div>
 
 <script type="module">
-import { serial as polyfill }
-    from "https://cdn.jsdelivr.net/npm/web-serial-polyfill@1.0.15/dist/serial.js";
 
 const $ = id => document.getElementById(id);
 
-// The polyfill reports errors as plain strings
+// Some errors arrive as plain strings
 const errText = e =>
     e === undefined ? "undefined"
                     : (e && e.message) || String(e);
@@ -367,7 +365,108 @@ function showNetworks(list)
         });
 }
 
-// Espressif's USB Serial/JTAG: VID 0x303A
+/*
+ * A CDC-ACM port straight over WebUSB, in place of Google's
+ * web-serial-polyfill: the ESP's USB Serial/JTAG sends empty
+ * packets to end a transfer, and the polyfill hands those to the
+ * stream, which throws "chunk is empty". Empty packets are
+ * skipped here. Same reader/writer shape as Web Serial.
+ */
+async function openUsbCdc()
+{
+    const dev = await navigator.usb.requestDevice(
+        { filters: [{ vendorId: 0x303a }] });
+
+    await dev.open();
+
+    if (!dev.configuration)
+        await dev.selectConfiguration(1);
+
+    const ifaces = dev.configuration.interfaces;
+
+    const ctrl = ifaces.find(i => i.alternates[0].interfaceClass === 2);
+    const data = ifaces.find(i => i.alternates[0].interfaceClass === 10);
+
+    await dev.claimInterface(ctrl.interfaceNumber);
+    await dev.claimInterface(data.interfaceNumber);
+
+    const eps = data.alternates[0].endpoints;
+    const epIn = eps.find(e => e.direction === "in");
+    const epOut = eps.find(e => e.direction === "out");
+
+    // SET_CONTROL_LINE_STATE, DTR on and RTS off as the polyfill
+    // did; RTS is what resets the chip
+    await dev.controlTransferOut({
+        requestType: "class", recipient: "interface",
+        request: 0x22, value: 0x01, index: ctrl.interfaceNumber });
+
+    log("USB: " + (dev.productName || "?") + ", interfaces " +
+        ctrl.interfaceNumber + "/" + data.interfaceNumber +
+        ", endpoints in " + epIn.endpointNumber + " (" +
+        epIn.packetSize + " B) out " + epOut.endpointNumber);
+
+    let closed = false;
+
+    return {
+        reader: {
+            async read()
+            {
+                while (!closed)
+                {
+                    const r = await dev.transferIn(epIn.endpointNumber,
+                                                   epIn.packetSize * 64);
+
+                    if (r.status !== "ok")
+                        throw new Error("USB transfer: " + r.status);
+
+                    if (r.data && r.data.byteLength)
+                        return { value: new Uint8Array(r.data.buffer,
+                                     r.data.byteOffset, r.data.byteLength),
+                                 done: false };
+                }
+
+                return { value: undefined, done: true };
+            },
+            async cancel() { closed = true; },
+            releaseLock() { }
+        },
+        writer: {
+            async write(bytes)
+            {
+                const r = await dev.transferOut(epOut.endpointNumber, bytes);
+
+                if (r.status !== "ok")
+                    throw new Error("USB transfer: " + r.status);
+            },
+            releaseLock() { }
+        },
+        port: {
+            async close() { closed = true; await dev.close(); }
+        }
+    };
+}
+
+async function connectUsb()
+{
+    try
+    {
+        ({ reader, writer, port } = await openUsbCdc());
+
+        setConnected(true);
+        setState("connected (WebUSB)", "ok");
+        log("port open");
+
+        readLoop();
+
+        run("/api/status");
+    }
+    catch (e)
+    {
+        setState(errText(e), "bad");
+        log("error: " + errText(e));
+    }
+}
+
 async function connect(api, filters)
 {
     try
@@ -394,11 +493,10 @@ async function connect(api, filters)
     }
 }
 
-// WebUSB through Google's polyfill: the path Chrome on Android
-// has had for long
+// WebUSB: the path Chrome on Android has had for long
 $("connectUsb").onclick = () =>
     navigator.usb
-        ? connect(polyfill, [{ usbVendorId: 0x303a }])
+        ? connectUsb()
         : setState("this browser has no WebUSB", "bad");
 
 // Chrome's own Web Serial, no filter: shows every port it offers
