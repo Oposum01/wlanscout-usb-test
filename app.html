@@ -427,6 +427,32 @@ tbody tr.assocSeen.highlight {
     box-shadow: 0 3px 12px rgba(0,0,0,0.7);
 }
 
+/* Close button, only where nothing hovers: a tap opens the
+   tooltip and no "mouse leaves" ever comes to close it */
+#tip .tipClose {
+    display: none;
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    pointer-events: auto;
+    background: none;
+    border: none;
+    color: #bbb;
+    font-size: 20px;
+    line-height: 1;
+    padding: 2px 6px;
+}
+
+@media (hover: none) {
+    #tip {
+        padding-top: 26px;
+    }
+
+    #tip .tipClose {
+        display: block;
+    }
+}
+
 /* Phones held upright: less padding, so more of a row fits */
 @media (max-width: 700px) {
     .section {
@@ -3162,7 +3188,21 @@ function showTip(html, clientX, clientY)
 {
     const tip = document.getElementById("tip");
 
-    tip.innerHTML = html;
+    // What is on screen: on a phone the page can be wider than
+    // that, and a tooltip placed by the page width ran off it
+    const vv = window.visualViewport;
+
+    const viewX = vv ? vv.offsetLeft : 0;
+    const viewY = vv ? vv.offsetTop : 0;
+    const viewW = vv ? vv.width : window.innerWidth;
+    const viewH = vv ? vv.height : window.innerHeight;
+
+    tip.style.maxWidth = Math.min(420, viewW - 16) + "px";
+
+    tip.innerHTML =
+        "<button class='tipClose' aria-label='Close' " +
+        "onclick='hideTip()'>\u2715</button>" + html;
+
     tip.style.display = "block";
 
     const w = tip.offsetWidth;
@@ -3171,15 +3211,34 @@ function showTip(html, clientX, clientY)
     let x = clientX + 16;
     let y = clientY + 16;
 
-    if (x + w > window.innerWidth - 8)
+    if (x + w > viewX + viewW - 8)
         x = clientX - w - 16;
 
-    if (y + h > window.innerHeight - 8)
+    if (y + h > viewY + viewH - 8)
         y = clientY - h - 16;
 
-    tip.style.left = Math.max(4, x) + "px";
-    tip.style.top = Math.max(4, y) + "px";
+    x = Math.min(Math.max(viewX + 4, x), viewX + viewW - w - 4);
+    y = Math.max(viewY + 4, y);
+
+    tip.style.left = x + "px";
+    tip.style.top = y + "px";
 }
+
+/*
+ * A tap anywhere else closes the tooltip, a tap on another row
+ * opens that one's. Mouse clicks leave it alone, the pointer
+ * leaving does that.
+ */
+document.addEventListener("pointerdown", e =>
+{
+    const tip = document.getElementById("tip");
+
+    if (e.pointerType !== "mouse" && tip.style.display === "block" &&
+        !tip.contains(e.target))
+    {
+        hideTip();
+    }
+}, true);
 
 
 function hideTip()
@@ -8715,8 +8774,6 @@ function updateNetworkTable()
             highlightTableRow();
         });
 
-        tr.addEventListener("click", () => focusChannel(n.channel));
-
         tbody.appendChild(tr);
     });
 
@@ -9001,8 +9058,6 @@ function fillClientTable(tbodyId, list, columns = clientColumns,
         });
 
         tr.addEventListener("mouseleave", hideTip);
-
-        tr.addEventListener("click", () => focusChannel(c.ch));
 
         tbody.appendChild(tr);
     });
