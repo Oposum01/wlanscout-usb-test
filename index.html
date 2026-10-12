@@ -137,6 +137,11 @@ tells whether the phone sees the board at all.
 </div>
 
 <div class="box">
+<b>Log</b>
+<pre id="log"></pre>
+</div>
+
+<div class="box">
 <b>Last answer</b>
 <pre id="raw"></pre>
 </div>
@@ -146,6 +151,33 @@ import { serial as polyfill }
     from "https://cdn.jsdelivr.net/npm/web-serial-polyfill@1.0.15/dist/serial.js";
 
 const $ = id => document.getElementById(id);
+
+// The polyfill reports errors as plain strings
+const errText = e =>
+    e === undefined ? "undefined"
+                    : (e && e.message) || String(e);
+
+const t0 = performance.now();
+const stamp = () => ((performance.now() - t0) / 1000).toFixed(1) + " s";
+
+// Everything that happens, newest on top
+function log(text)
+{
+    const line = document.createElement("div");
+
+    line.textContent = stamp() + "  " + text;
+    $("log").prepend(line);
+}
+
+if (navigator.usb)
+{
+    navigator.usb.addEventListener("connect", e =>
+        log("USB connect: " + (e.device.productName || "?")));
+
+    navigator.usb.addEventListener("disconnect", e =>
+        log("USB disconnect: " + (e.device.productName || "?") +
+            " (a reset of the board looks like this)"));
+}
 
 let port = null;
 let reader = null;
@@ -233,7 +265,8 @@ async function readLoop()
     }
     catch (e)
     {
-        setState("read error: " + e.message, "bad");
+        setState("read error: " + errText(e), "bad");
+        log("read error: " + errText(e));
     }
 }
 
@@ -289,7 +322,7 @@ async function run(path)
     }
     catch (e)
     {
-        row[4] = e.message;
+        row[4] = errText(e);
     }
 
     const tr = document.createElement("tr");
@@ -348,6 +381,7 @@ async function connect(api, filters)
 
         setConnected(true);
         setState("connected", "ok");
+        log("port open");
 
         readLoop();
 
@@ -355,7 +389,8 @@ async function connect(api, filters)
     }
     catch (e)
     {
-        setState(e.message, "bad");
+        setState(errText(e), "bad");
+        log("error: " + errText(e));
     }
 }
 
@@ -390,7 +425,8 @@ $("listUsb").onclick = async () =>
     }
     catch (e)
     {
-        setState(e.message, "bad");
+        setState(errText(e), "bad");
+        log("error: " + errText(e));
     }
 };
 
