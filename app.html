@@ -6005,8 +6005,10 @@ function networkTooltip(n)
             "PMF " + pmfText(n)])],
         ["WPS", n.wps || n.wpsname || n.wpsdev ? join([
             n.wps ? "active" : "",
-            n.wpsname ? "device " + escapeHTML(n.wpsname) : "",
-            escapeHTML(wpsDeviceText(n))]) : ""],
+            n.wpsname ? "device \u201c" + escapeHTML(n.wpsname) +
+                        "\u201d" : "",
+            wpsDeviceText(n) ? "\u201c" + escapeHTML(wpsDeviceText(n)) +
+                               "\u201d" : ""]) : ""],
         ["Also", join([
             n.preauth ? "pre-authentication" : "",
             n.hs20 ? "Hotspot 2.0" : "",
@@ -10054,8 +10056,10 @@ async function updateStatus()
         document.getElementById("version").innerText =
             "v" + st.version +
             " | " + st.oui + " OUIs" +
-            " | " + String(st.clients).padStart(2) +
-            (st.clients === 1 ? " client " : " clients") +
+            // Web clients mean nothing over USB; same width either way
+            (usbLink ? " |   via USB"
+                     : " | " + String(st.clients).padStart(2) +
+                       (st.clients === 1 ? " client " : " clients")) +
             (st.static ? " | static IP " + st.ip : "") +
             " | scan: " + st.scan;
 
