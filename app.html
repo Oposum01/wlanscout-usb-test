@@ -60,9 +60,16 @@ h1 {
     white-space: pre;
 }
 
-/* Pushes the buttons to the right end of the header */
-.headerSpacer {
-    flex: 1;
+/* The header buttons as one group, right-aligned: when they do
+   not fit beside the title they move to the next line together
+   instead of breaking up */
+.headerButtons {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
 }
 
 /* Short messages ("Connection lost", a refused command) on a line
@@ -471,6 +478,29 @@ tbody tr.assocSeen.highlight {
         padding: 8px;
     }
 
+    /* Six buttons do not fit a phone held upright: break within
+       the group, still right-aligned */
+    header {
+        padding: 10px 10px;
+        gap: 10px;
+    }
+
+    /* Padded to fixed widths, so it cannot wrap; a smaller pitch
+       keeps it on a 360 px screen */
+    .version {
+        font-size: 10px;
+    }
+
+    .headerButtons {
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .headerButtons button {
+        padding: 5px 6px;
+        font-size: 13px;
+    }
+
     th,
     td {
         padding: 4px 5px;
@@ -588,12 +618,12 @@ ESP32-C5 wlanscout+
       id="version">
 </span>
 
-<div class="headerSpacer"></div>
-
 <span id="pausedBadge"
       class="pausedBadge">
 PAUSED
 </span>
+
+<div class="headerButtons">
 
 <button id="modeWifiBtn"
         class="modeBtn active"
@@ -632,6 +662,8 @@ USB
         onclick="window.togglePause()">
 &#x275A;&#x275A; Pause
 </button>
+
+</div>
 
 </header>
 
@@ -3155,6 +3187,18 @@ function offlineText()
         : "Connection lost";
 }
 
+function clearOfflineText()
+{
+    const status = document.getElementById("status");
+
+    if (status.innerText === offlineText() ||
+        status.innerText === "Connection lost" ||
+        status.innerText.startsWith("Not connected"))
+    {
+        status.innerText = "";
+    }
+}
+
 function showUsbState(text)
 {
     const button = document.getElementById("usbBtn");
@@ -3185,6 +3229,7 @@ async function toggleUsb()
         usbLink = await UsbLink.open();
 
         showUsbState("connected over USB");
+        clearOfflineText();
 
         // Fetch everything now instead of waiting for the poll
         loadChannelPlan();
@@ -9969,6 +10014,10 @@ async function updateStatus()
         lastStatus = st;
 
         deviceOnline = true;
+
+        // The sensor answers again: drop "Not connected" or
+        // "Connection lost", whichever view is open
+        clearOfflineText();
 
         // Scan state last and padded, so the badge keeps its
         // width while the sweep runs
