@@ -1798,6 +1798,10 @@ Import
 View file
 </button>
 
+<button onclick="window.clearSnapshots()">
+Clear all
+</button>
+
 <input type="file"
        id="snapImport"
        accept=".zip,.json,application/zip,application/json"
@@ -1844,7 +1848,8 @@ usual tables and tooltips until <i>Back to live</i>. <i>Export</i>
 saves one as a .zip, <i>Export all</i> every one in a single .zip;
 <i>Import</i> puts such files on a sensor again, this one or another,
 where they count as the newest. <i>View file</i> shows a file without
-putting it on the sensor, also without one. The capture buffers are
+putting it on the sensor, also without one; <i>Clear all</i>
+deletes every snapshot on the sensor. The capture buffers are
 not included: the pcap links in a snapshot ask the connected sensor
 for what it holds now, so the frames may be gone, and for a snapshot
 from another sensor they were never there; the message then says so.
@@ -3724,6 +3729,40 @@ async function deleteSnapshot(seq)
 }
 
 window.deleteSnapshot = deleteSnapshot;
+
+// Every snapshot on the sensor gone, after asking
+async function clearSnapshots()
+{
+    const count = snapshotList.length;
+
+    if (!count)
+    {
+        alert("There are no snapshots on the sensor");
+        return;
+    }
+
+    if (!confirm("Delete all " + count + " snapshot" +
+                 (count === 1 ? "" : "s") + " on the sensor? " +
+                 "Export all first to keep them."))
+        return;
+
+    try
+    {
+        const response = await api("/api/snapshot?clear=1",
+                                   { cache: "no-store" });
+
+        showSnapshotList(await response.json());
+
+        snapshotStatus(count + " snapshot" + (count === 1 ? "" : "s") +
+                       " deleted");
+    }
+    catch (e)
+    {
+        snapshotStatus("Clear failed: " + (e.message || e));
+    }
+}
+
+window.clearSnapshots = clearSnapshots;
 
 // Short-lived progress and result in the status line
 function snapshotStatus(text, keep)
