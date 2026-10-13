@@ -88,6 +88,26 @@ h1 {
     display: none;
 }
 
+/* Shown while the page reads a snapshot instead of the sensor */
+#snapshotBar {
+    display: none;
+    margin: 8px 15px 0 15px;
+    padding: 6px 10px;
+    border: 1px solid #8a6d2a;
+    border-radius: 4px;
+    background: #2a2210;
+    color: #e0c080;
+    font-size: 13px;
+}
+
+#snapshotBar.on {
+    display: block;
+}
+
+#snapshotBar button {
+    margin-left: 8px;
+}
+
 .section {
     margin: 15px;
     background: #181818;
@@ -447,6 +467,8 @@ tbody tr.assocSeen.highlight {
     color: #ddd;
     z-index: 50;
     max-width: min(420px, 92vw);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     box-shadow: 0 3px 12px rgba(0,0,0,0.7);
 }
 
@@ -467,8 +489,10 @@ tbody tr.assocSeen.highlight {
 }
 
 @media (hover: none) {
+    /* Taps reach it, so one taller than the screen can be scrolled */
     #tip {
         padding-top: 26px;
+        pointer-events: auto;
     }
 
     #tip .tipClose {
@@ -590,6 +614,35 @@ button.pending {
     margin-right: 2px;
 }
 
+/* Next to the badge on every view: keep the moment */
+.snapBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: none;
+    color: #aaa;
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.snapBtn svg {
+    width: 15px;
+    height: 15px;
+}
+
+.snapBtn.ok {
+    color: #8fbf8f;
+    border-color: #5a8f5a;
+}
+
+.snapBtn.bad {
+    color: #d08080;
+    border-color: #8f5a5a;
+}
+
 .pausedBadge {
     display: none;
     background: #7a3b12;
@@ -635,6 +688,22 @@ ESP32-C5 wlanscout+
 <span class="version"
       id="version">
 </span>
+
+<button id="snapBtn"
+        class="snapBtn"
+        title="Take a snapshot: keep this moment on the sensor (Settings, Snapshots)"
+        aria-label="Take snapshot"
+        onclick="window.takeSnapshot()">
+<svg viewBox="0 0 24 24"
+     aria-hidden="true">
+<path d="M4 7h3l2-3h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"
+      fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linejoin="round"/>
+<circle cx="12" cy="13" r="3.5"
+        fill="none" stroke="currentColor" stroke-width="2"/>
+</svg>
+<span class="wideLabel">Snapshot</span>
+</button>
 
 <span id="pausedBadge"
       class="pausedBadge">
@@ -687,6 +756,8 @@ USB
 
 
 <div id="status">Ethernet: waiting...</div>
+
+<div id="snapshotBar"></div>
 
 
 <div id="modeNote"
@@ -1703,6 +1774,68 @@ and with since=&lt;epoch&gt; to get only what changed.
 <div class="section">
 
 <div class="title">
+Snapshots
+<span class="small"
+      id="snapInfo">
+</span>
+</div>
+
+<div class="controls">
+
+<button onclick="window.takeSnapshot()">
+Take snapshot
+</button>
+
+<button onclick="document.getElementById('snapFile').click()">
+Open file
+</button>
+
+<input type="file"
+       id="snapFile"
+       accept=".json,application/json"
+       style="display:none"
+       onchange="window.openSnapshotFile(this)">
+
+</div>
+
+<div class="controls"
+     id="snapParts"
+     style="margin-top:8px">
+<span class="small">Keep:</span>
+<label><input type="checkbox" data-bit="1"> networks</label>
+<label><input type="checkbox" data-bit="2"> stations</label>
+<label><input type="checkbox" data-bit="4"> association history</label>
+<label><input type="checkbox" data-bit="8"> spectrum</label>
+<label><input type="checkbox" data-bit="16"> IE catalog</label>
+<label><input type="checkbox" data-bit="32"> BLE</label>
+<label><input type="checkbox" data-bit="64"> 802.15.4</label>
+</div>
+
+<table style="margin-top:8px">
+<tbody id="snapTable">
+</tbody>
+</table>
+
+<div class="small"
+     style="margin-top:8px">
+A snapshot keeps what the page shows at one moment on the
+sensor's flash, the last ten (fewer when the tables are full and
+the flash runs short); <i>Keep</i> chooses what goes in,
+stored on the sensor. The camera button next to the status badge
+takes one from any view, and so does a short press on the board's
+BOOT button, without the page; the LED blinks green twice
+when it is written, red when it failed. <i>View</i> shows it with the
+usual tables and tooltips until <i>Back to live</i>; a downloaded one
+opens with <i>Open file</i>, also without a sensor. The capture
+buffers are not included.
+</div>
+
+</div>
+
+
+<div class="section">
+
+<div class="title">
 Event log
 <span class="small"
       id="logInfo">
@@ -1898,6 +2031,7 @@ their contents stay opaque.
 // ==========================================================
 
 let liveData = null;
+let snapshotView = null;    // see "Snapshots"
 let historyData = null;
 let networks = [];
 let stations = [];
@@ -2326,6 +2460,14 @@ function uiAction(fn, arg)
 
 function queueCommand(url, then)
 {
+    // Nothing to change in a moment that has passed; the clock
+    // still goes to a sensor that is plugged in meanwhile
+    if (snapshotView && !url.startsWith("/api/time"))
+    {
+        alert("Showing a snapshot: press Back to live first");
+        return;
+    }
+
     cmdSent++;
 
     pendingCommands.push({ url: url, then: then });
@@ -2642,6 +2784,7 @@ function showSettings()
     applyModeUI();
 
     updateSystem();
+    updateSnapshots();
 }
 
 
@@ -3116,6 +3259,9 @@ class UsbLink
  */
 function api(url, options = {})
 {
+    if (snapshotView && snapshotServes(url))
+        return Promise.resolve(snapshotAnswer(url));
+
     if (usbLink)
         return usbLink.request(url);
 
@@ -3195,6 +3341,359 @@ function apiLink(event, a)
     apiDownload(a.getAttribute("href"));
 
     return false;
+}
+
+
+// ==========================================================
+// Snapshots: a moment kept on the sensor, read back later
+// ==========================================================
+
+/*
+ * The snapshot being viewed, as the sensor writes it (see
+ * "Snapshots" in the firmware): the answers of the read-only
+ * endpoints, keyed by the URL the page asks for. While it is set,
+ * api() answers those from it; everything else, the snapshot list
+ * included, still goes to the sensor. Declared with the other
+ * state at the top.
+ */
+function snapshotPath(url)
+{
+    return url.split("?")[0];
+}
+
+function snapshotServes(url)
+{
+    const path = snapshotPath(url);
+
+    return Object.keys(snapshotView.answers)
+        .some(key => snapshotPath(key) === path);
+}
+
+// The exact URL, else any answer of the same endpoint
+function snapshotAnswer(url)
+{
+    const answers = snapshotView.answers;
+
+    let body = answers[url];
+
+    if (body === undefined)
+    {
+        const key = Object.keys(answers)
+            .find(k => snapshotPath(k) === snapshotPath(url));
+
+        body = key ? answers[key] : null;
+    }
+
+    if (body === null || body === undefined)
+        return new Response("Not in this snapshot", { status: 404 });
+
+    return new Response(JSON.stringify(body),
+        { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+// "2026-10-13 14:50" or, without a clock, the uptime then
+function snapshotTimeText(s)
+{
+    return s.epoch ? stampText(s.epoch, 0)
+                   : uptimeText(s.uptime) + " after power-on";
+}
+
+// Whatever the page collected from the other source goes
+function resetViewData()
+{
+    liveData = null;
+    historyData = null;
+    networks = [];
+    stations = [];
+    assocHistory = null;
+    catalogData = null;
+    bleDevices = [];
+    zbData = null;
+    zbWaterfallData = null;
+
+    Object.keys(apNameCache).forEach(k => delete apNameCache[k]);
+    Object.keys(apNameFromStation).forEach(k => delete apNameFromStation[k]);
+
+    hideTip();
+
+    // The next round fetches everything
+    pollTick = -1;
+}
+
+function enterSnapshot(data)
+{
+    if (!data || data.wlanscout_snapshot !== 1 || !data.answers)
+        throw new Error("not a wlanscout snapshot");
+
+    snapshotView = data;
+
+    resetViewData();
+
+    const st = data.answers["/api/status"] || {};
+
+    uiPage = st.mode === 1 ? "ble" : (st.mode === 2 ? "zb" : "wifi");
+    scanMode = uiPage;
+
+    applyModeUI();
+    showSnapshotBar();
+    loadChannelPlan();
+}
+
+function leaveSnapshot()
+{
+    snapshotView = null;
+
+    resetViewData();
+    showSnapshotBar();
+    loadChannelPlan();
+}
+
+window.leaveSnapshot = leaveSnapshot;
+
+function showSnapshotBar()
+{
+    const bar = document.getElementById("snapshotBar");
+
+    bar.classList.toggle("on", !!snapshotView);
+
+    if (!snapshotView)
+    {
+        bar.innerHTML = "";
+        return;
+    }
+
+    const s = snapshotView;
+
+    bar.innerHTML = "Snapshot " + s.seq +
+        (s.name ? " “" + escapeHTML(s.name) + "”" : "") +
+        (s.sensor ? " of sensor " + escapeHTML(s.sensor) : "") +
+        ", " + snapshotTimeText(s) +
+        (s.fw ? ", firmware " + escapeHTML(s.fw) : "") +
+        (s.parts !== undefined && s.parts !== 127
+            ? " (without " + snapshotPartsText(127 & ~s.parts) + ")"
+            : "") +
+        ": the page shows that moment, the sensor is not asked" +
+        "<button onclick='leaveSnapshot()'>Back to live</button>";
+}
+
+async function viewSnapshot(seq)
+{
+    try
+    {
+        const response = await api("/api/snapshot?get=" + seq,
+                                   { cache: "no-store" });
+
+        if (!response.ok)
+            throw new Error(await response.text());
+
+        enterSnapshot(await response.json());
+    }
+    catch (e)
+    {
+        alert("Cannot open snapshot " + seq + ": " + (e.message || e));
+    }
+}
+
+window.viewSnapshot = viewSnapshot;
+
+/*
+ * From the camera button on any view or from Settings. The answer
+ * shows on the button, green or red as the board's LED, and in
+ * the status line for a few seconds.
+ */
+async function takeSnapshot()
+{
+    let text;
+    let ok = false;
+
+    try
+    {
+        const response = await api("/api/snapshot?take=1",
+                                   { cache: "no-store" });
+
+        const list = await response.json();
+
+        ok = !!list.taken;
+
+        text = ok ? "Snapshot " + list.taken + " kept on the sensor " +
+                    "(Settings, Snapshots)"
+                  : "The snapshot could not be written";
+
+        showSnapshotList(list);
+    }
+    catch (e)
+    {
+        text = "No snapshot: " + (e.message || e);
+    }
+
+    const button = document.getElementById("snapBtn");
+    const status = document.getElementById("status");
+
+    button.classList.remove("ok", "bad");
+    button.classList.add(ok ? "ok" : "bad");
+
+    status.innerText = text;
+
+    setTimeout(() =>
+    {
+        button.classList.remove("ok", "bad");
+
+        if (status.innerText === text)
+            status.innerText = "";
+    }, 5000);
+}
+
+// The checkboxes under Keep, as bits for /api/snapshot?parts=
+async function setSnapshotParts()
+{
+    let parts = 0;
+
+    document.querySelectorAll("#snapParts input").forEach(box =>
+    {
+        if (box.checked)
+            parts |= Number(box.dataset.bit);
+    });
+
+    try
+    {
+        const response = await api("/api/snapshot?parts=" + parts,
+                                   { cache: "no-store" });
+
+        showSnapshotList(await response.json());
+    }
+    catch (e)
+    {
+        updateSnapshots();
+    }
+}
+
+document.querySelectorAll("#snapParts input").forEach(box =>
+    box.addEventListener("change", setSnapshotParts));
+
+// "networks, spectrum" for the bits set
+function snapshotPartsText(parts)
+{
+    const names = ["networks", "stations", "association history",
+                   "spectrum", "IE catalog", "BLE", "802.15.4"];
+
+    return names.filter((name, i) => parts & (1 << i)).join(", ");
+}
+
+window.takeSnapshot = takeSnapshot;
+
+// The last list from the sensor, for the name to start from
+let snapshotList = [];
+
+async function renameSnapshot(seq)
+{
+    const old = (snapshotList.find(s => s.seq === seq) || {}).name || "";
+
+    const name = prompt("Name for snapshot " + seq +
+                        " (empty removes it):", old);
+
+    if (name === null)
+        return;
+
+    try
+    {
+        await api("/api/snapshot?rename=" + seq + "&name=" +
+                  encodeURIComponent(name.trim()), { cache: "no-store" });
+    }
+    catch (e)
+    {
+        alert("Cannot rename: " + (e.message || e));
+    }
+
+    updateSnapshots();
+}
+
+window.renameSnapshot = renameSnapshot;
+
+async function deleteSnapshot(seq)
+{
+    if (!confirm("Delete snapshot " + seq + "?"))
+        return;
+
+    await api("/api/snapshot?del=" + seq, { cache: "no-store" });
+
+    updateSnapshots();
+}
+
+window.deleteSnapshot = deleteSnapshot;
+
+function openSnapshotFile(input)
+{
+    const file = input.files && input.files[0];
+
+    if (!file)
+        return;
+
+    file.text()
+        .then(text => enterSnapshot(JSON.parse(text)))
+        .catch(e => alert("Cannot open " + file.name + ": " +
+                          (e.message || e)))
+        .finally(() => input.value = "");
+}
+
+window.openSnapshotFile = openSnapshotFile;
+
+async function updateSnapshots()
+{
+    try
+    {
+        const response = await api("/api/snapshot",
+                                   { cache: "no-store",
+                                     signal: timeoutSignal(4000) });
+
+        if (response.ok)
+            showSnapshotList(await response.json());
+    }
+    catch (e)
+    {
+        showSnapshotList(null);
+    }
+}
+
+function showSnapshotList(list)
+{
+    const table = document.getElementById("snapTable");
+    const info = document.getElementById("snapInfo");
+
+    if (!list || !list.snapshots)
+    {
+        table.innerHTML = "";
+        info.innerText = "(sensor not reachable)";
+        return;
+    }
+
+    info.innerText = list.fs
+        ? "(" + list.snapshots.length + " of " + list.keep + ")"
+        : "(no flash file system)";
+
+    // Firmware before 1.70.0 keeps everything and has no setting
+    document.querySelectorAll("#snapParts input").forEach(box =>
+    {
+        box.disabled = list.parts === undefined;
+        box.checked = list.parts === undefined ||
+                      !!(list.parts & Number(box.dataset.bit));
+    });
+
+    table.innerHTML = list.snapshots.slice().reverse().map(s =>
+        "<tr><td>" + s.seq + "</td>" +
+        "<td>" + (s.name ? "<b>" + escapeHTML(s.name) + "</b>" : "") +
+        "</td>" +
+        "<td>" + snapshotTimeText(s) + "</td>" +
+        "<td>" + Math.round(s.bytes / 1024) + " kB</td>" +
+        "<td><button onclick='window.viewSnapshot(" + s.seq +
+        ")'>View</button> " +
+        "<button onclick=\"apiDownload('/api/snapshot?get=" + s.seq +
+        "')\">Download</button> " +
+        "<button onclick='window.renameSnapshot(" + s.seq +
+        ")'>Rename</button> " +
+        "<button onclick='window.deleteSnapshot(" + s.seq +
+        ")'>Delete</button></td></tr>").join("");
+
+    snapshotList = list.snapshots;
 }
 
 // What the status line says when the sensor does not answer
@@ -3289,11 +3788,15 @@ function showTip(html, clientX, clientY)
 
     tip.style.maxWidth = Math.min(420, viewW - 16) + "px";
 
+    // Never taller than the screen; the rest scrolls inside it
+    tip.style.maxHeight = (viewH - 8) + "px";
+
     tip.innerHTML =
         "<button class='tipClose' aria-label='Close' " +
         "onclick='hideTip()'>\u2715</button>" + html;
 
     tip.style.display = "block";
+    tip.scrollTop = 0;
 
     const w = tip.offsetWidth;
     const h = tip.offsetHeight;
@@ -3308,7 +3811,7 @@ function showTip(html, clientX, clientY)
         y = clientY - h - 16;
 
     x = Math.min(Math.max(viewX + 4, x), viewX + viewW - w - 4);
-    y = Math.max(viewY + 4, y);
+    y = Math.min(Math.max(viewY + 4, y), viewY + viewH - h - 4);
 
     tip.style.left = x + "px";
     tip.style.top = y + "px";
@@ -10273,9 +10776,10 @@ async function updateStatus()
             "v" + st.version +
             " | " + st.oui + " OUIs" +
             // Web clients mean nothing over USB; same width either way
-            (usbLink ? " |   via USB"
-                     : " | " + String(st.clients).padStart(2) +
-                       (st.clients === 1 ? " client " : " clients")) +
+            (snapshotView ? " |  snapshot"
+             : usbLink ? " |   via USB"
+                       : " | " + String(st.clients).padStart(2) +
+                         (st.clients === 1 ? " client " : " clients")) +
             (st.static ? " | static IP " + st.ip : "") +
             " | scan: " + st.scan;
 
@@ -10973,6 +11477,9 @@ async function pollLoop()
         if (uiPage === "settings")
         {
             await updateSystem();
+
+            if (pollTick % 10 === 0)
+                await updateSnapshots();
         }
         else if (!paused && deviceOnline)
         {
