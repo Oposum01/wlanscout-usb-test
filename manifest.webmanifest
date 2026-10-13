@@ -2,7 +2,7 @@
   "name": "wlanscout",
   "short_name": "wlanscout",
   "description": "Wi-Fi, BLE and 802.15.4 scanner on an ESP32-C5, over USB",
-  "start_url": "./app.html",
+  "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "background_color": "#111111",
