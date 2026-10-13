@@ -2499,7 +2499,8 @@ function queueCommand(url, then)
 
     pendingCommands.push({ url: url, then: then });
 
-    pollTick = 0;
+    // The round after a command fetches the tables too
+    pollTick = -1;
 
     // Send straight away when the lane is free
     if (!pollBusy)
@@ -2886,8 +2887,9 @@ function togglePause()
     document.getElementById("pausedBadge")
         .classList.toggle("on", paused);
 
+    // Back from a pause: the next round fetches everything
     if (!paused)
-        pollTick = 0;
+        pollTick = -1;
 }
 
 
@@ -5346,6 +5348,9 @@ function matchesFilter(n)
         n.cc,
         n.mfpr ? "pmf" : "",
         n.wps ? "wps" : "",
+        (n.basicrates || []).length
+            ? "basic rates " + n.basicrates.map(r => r / 2).join(" ")
+            : "basic rates none marked basic",
 
         // What the tooltip spells out, so it can be searched too:
         // capabilities, 11k/11v detail, multi-link, streams, the
@@ -6205,6 +6210,43 @@ function networkNotes(n)
             "standard defines VHT for 5 GHz only, which is why " +
             "this BSS is listed as Wi-Fi 4"]);
     }
+    else if (n.channel <= 14 &&
+             (n.voui || []).some(v => v[0] === "00904C" && v[1] === 4))
+    {
+        /*
+         * The same, wrapped: Broadcom's vendor element type 4 carries
+         * VHT capabilities so that Broadcom clients use 256-QAM in
+         * 2.4 GHz ("TurboQAM"). In a Wi-Fi 6 BSS that is redundant,
+         * HE brings 256-QAM in 2.4 GHz with the standard.
+         */
+        notes.push([amber,
+            "Broadcom's element for 256-QAM in 2.4 GHz (00:90:4C " +
+            "type 4, VHT capabilities wrapped as a vendor element): " +
+            (n.std >= 6
+                ? "for older Broadcom clients only, Wi-Fi 6 brings " +
+                  "256-QAM in 2.4 GHz anyway"
+                : "a vendor extension, 802.11n itself stops at " +
+                  "64-QAM; only Broadcom clients use it")]);
+    }
+
+    /*
+     * A hidden SSID: the name still goes out in clear in the probe
+     * and association requests of every client that joins, so it
+     * protects nothing. Not for a mesh (no SSID by design), a NAN
+     * cluster, or the OWE half of a transition pair, which is hidden
+     * by design.
+     */
+    if (!isNan(n) && !n.mesh && !n.owename &&
+        (n.ssid === "<hidden>" || n.resolved))
+    {
+        notes.push([amber,
+            "Hidden SSID: no protection. Every client that joins " +
+            "sends the name in clear in its probe and association " +
+            "requests, and keeps asking for it wherever it goes, " +
+            "telling everyone nearby" +
+            (n.resolved ? "; that is how the name above was learned"
+                        : "")]);
+    }
 
     if (n.gf)
     {
@@ -6280,7 +6322,15 @@ function networkNotes(n)
             "extra collisions. Not recommended"]);
     }
 
-    if (n.intol)
+    if (n.intol && n.bandwidth >= 40 && isBand24(n.channel))
+    {
+        notes.push([red,
+            "40 MHz Intolerant, yet this BSS runs 40 MHz itself: it " +
+            "makes every neighbouring AP in the band fall back to " +
+            "20 MHz and keeps the width for itself. Either switch " +
+            "it to 20 MHz or drop the intolerant bit"]);
+    }
+    else if (n.intol)
     {
         notes.push([amber,
             "40 MHz Intolerant: this BSS demands that every " +
@@ -6292,7 +6342,43 @@ function networkNotes(n)
         notes.push([amber,
             "Lowest basic rate " + (n.basic / 2) + " Mbit/s: " +
             "beacons and management frames are sent at that " +
-            "rate and occupy the channel for everyone"]);
+            "rate and occupy the channel for everyone. 1 and " +
+            "2 Mbit/s are 802.11b rates; unless 802.11b devices " +
+            "still need this BSS, switch 802.11b off (lowest " +
+            "basic rate 6 Mbit/s or more)"]);
+    }
+
+    /*
+     * No rate marked basic: the BSS asks nothing of its clients.
+     * Control frames then fall back to the mandatory rates of the
+     * PHY (6, 12 and 24 Mbit/s in OFDM), and the AP picks the beacon
+     * rate itself. It works, but it is not what the standard expects
+     * of an AP, and nobody can tell from the beacon what it needs.
+     */
+    if (Array.isArray(n.basicrates) && !n.basicrates.length && !n.basic)
+    {
+        notes.push([amber,
+            "No basic rate marked: the BSS requires no rate of its " +
+            "clients, so control frames fall back to the mandatory " +
+            "rates of the PHY (6, 12, 24 Mbit/s) and the AP picks " +
+            "the beacon rate itself. Unusual; it works, but leaves " +
+            "the clients guessing"]);
+    }
+
+    /*
+     * Pre-authentication (RSN capabilities bit 0) runs 802.1X
+     * towards the next AP ahead of a roam. With PSK or SAE alone
+     * there is no 802.1X to run: the bit does nothing, and says the
+     * configuration was copied from an enterprise one or set by
+     * mistake.
+     */
+    if (n.preauth && !/802\.1X/.test(n.akm || ""))
+    {
+        notes.push([amber,
+            "Pre-authentication announced without 802.1X: it " +
+            "authenticates ahead of a roam over 802.1X, which " +
+            escapeHTML(n.akm || "this AKM") + " does not use, so it " +
+            "does nothing here; likely a misconfiguration"]);
     }
 
     if (n.mbssid)
@@ -6317,6 +6403,20 @@ function networkNotes(n)
             "No Country element: clients cannot learn the " +
             "regulatory domain from this BSS and fall back to " +
             "their own conservative defaults"]);
+    }
+
+    const country = countryMajority();
+
+    if (n.cc && country && n.cc !== country.cc)
+    {
+        notes.push([blue,
+            "Country " + escapeHTML(n.cc) + " while " + country.count +
+            " of " + country.total + " networks here with a Country " +
+            "element say " + escapeHTML(country.cc) + " (" +
+            Math.round(100 * country.count / country.total) + " %): " +
+            "set up for another regulatory domain, likely bought " +
+            "abroad or left at a default. Clients that follow it " +
+            "take that domain's channels and power limits"]);
     }
 
     /*
@@ -6441,6 +6541,34 @@ function networkNotes(n)
 
 
 /*
+ * The country most networks in range announce, when more than half
+ * of at least five with a Country element agree: {cc, count, total},
+ * else null. An AP saying something else is set up for another
+ * regulatory domain.
+ */
+function countryMajority()
+{
+    const counts = {};
+    let total = 0;
+
+    networks.forEach(o =>
+    {
+        if (!o.cc)
+            return;
+
+        counts[o.cc] = (counts[o.cc] || 0) + 1;
+        total++;
+    });
+
+    if (total < 5)
+        return null;
+
+    const cc = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+
+    return counts[cc] * 2 > total ? { cc, count: counts[cc], total } : null;
+}
+
+/*
  * One device, its BSSIDs: the same address with the locally
  * administered bit set (08:… and 0A:…), or the same first five
  * octets with the last one in the same block of sixteen.
@@ -6458,10 +6586,14 @@ function sameDevice(a, b)
            (x[5] >> 4) === (y[5] >> 4);
 }
 
-// An AP MLD this sensor knows only one link of
+/*
+ * An AP MLD with a single link: link 0, nothing else named, no other
+ * BSSID of it heard. A higher link ID says there is a link 0
+ * somewhere, on a band or channel not being heard.
+ */
 function singleLinkMld(n)
 {
-    return !!n.mld && n.mlolink >= 0 && !n.mlolinks &&
+    return !!n.mld && n.mlolink === 0 && !n.mlolinks &&
            networks.filter(o => o.mld === n.mld).length === 1;
 }
 
@@ -6480,8 +6612,11 @@ function mloSplitText(n)
     if (!singleLinkMld(n))
         return "";
 
+    // On another band: several SSIDs on one radio, each its own
+    // MLD (a guest network beside the main one), is how it should be
     const others = networks.filter(o => o !== n && o.mld &&
         o.mld !== n.mld && singleLinkMld(o) &&
+        bandOfChannel(o.channel) !== bandOfChannel(n.channel) &&
         sameDevice(o.bssid, n.bssid));
 
     if (!others.length)
@@ -7112,6 +7247,8 @@ function apMakerHeader(n)
 
     if (iw && iw.group === 10)
         rows.push(["Device", "Vehicle"]);
+    else if (n.hp)
+        rows.push(["Device", "Printer"]);
 
     // Only a guess from what the AP sends, so it says so on top
     return rows.length
@@ -10200,9 +10337,9 @@ function sixTooltip(e)
         "<br>" +
         (r.gone
             ? "<span class='dim'>That AP is no longer in the network " +
-              "table: not heard for a minute, or pushed out by newer " +
-              "ones when the table is full; this list keeps its " +
-              "entries for two minutes.</span><br>"
+              "table: pushed out by newer ones when the table is " +
+              "full, while this list still holds its announcement." +
+              "</span><br>"
             : "");
 
     html +=
@@ -12176,7 +12313,9 @@ function sleep(ms)
 }
 
 
-let pollTick = 0;
+// Counted up before each round: -1 makes the first round 0, which
+// fetches everything at once instead of the tables only in round 4
+let pollTick = -1;
 
 
 async function pollLoop()
