@@ -5451,7 +5451,8 @@ function apClockText(n)
 /*
  * Who made the Wi-Fi chip, by the OUI of a vendor element its
  * driver adds to every beacon. Metalink is the WLAN part of
- * Lantiq, later Intel and now MaxLinear. Any other OUI in a
+ * Lantiq, later Intel and now MaxLinear. Texas Instruments' ACX
+ * chips sat in early 802.11g routers, FRITZ!Boxes among them. Any other OUI in a
  * vendor element names the maker of the device itself.
  *
  * Some Broadcom (Epigram) elements are copied by other chips so
@@ -5476,22 +5477,32 @@ const WIFI_CHIP_OUIS = {
     "00E04C": "Realtek",  "002686": "Quantenna",
     "000986": "MaxLinear (Lantiq)", "005043": "Marvell",
     "18FE34": "Espressif", "001C51": "Celeno",
-    "4045DA": "Unisoc (Spreadtrum)", "00025B": "CSR (Qualcomm)"
+    "4045DA": "Unisoc (Spreadtrum)", "00025B": "CSR (Qualcomm)",
+    "080028": "Texas Instruments"
 };
 
 /*
- * OUIs whose registry entry names the wrong company today: they
- * came with a takeover, but only the old maker's products send
- * them. 00:0B:86 is Aruba's, 00:19:77 Aerohive's, both now owned
- * by others; 00:A0:F8 was Symbol's, whose WLAN line went via
- * Motorola and Zebra to Extreme (WiNG).
+ * The maker's name for an OUI where the registry entry is long,
+ * old or missing. 00:0B:86 is Aruba's, 00:19:77 Aerohive's, both
+ * now owned by others; 00:A0:F8 was Symbol's, whose WLAN line went
+ * via Motorola and Zebra to Extreme (WiNG). Sophos APs send their
+ * own OUI 7C:5A:1C with the bytes reversed, 1C:5A:7C, which has
+ * no registry entry.
  */
 const MAKER_NAMES = {
     "000B86": "Aruba (HPE)",
     "001977": "Aerohive (Extreme)",
     "00A0F8": "Extreme WiNG",
     "1422DB": "eero (Amazon)",
-    "000C42": "MikroTik"
+    "000C42": "MikroTik",
+    "00090F": "Fortinet",
+    "001D0F": "TP-Link",
+    "009D85": "SigmaStar",
+    "000E58": "Sonos",
+    "00E0FC": "HUAWEI",
+    "1C5A7C": "Sophos",
+    "6CB227": "Sony",
+    "8CBEBE": "Xiaomi"
 };
 
 /*
@@ -6384,6 +6395,76 @@ function mldMaxLinks(x)
     return (x.mlof & 2) ? (x.mldcap & 0x0F) + 1 : 0;
 }
 
+/*
+ * The links of a station's multi-link request: first the one the
+ * request came in on (its link ID is the AP's), then one per
+ * per-STA profile with band, widest channel and address as far as
+ * the profile gives them.
+ */
+function mloLinkList(c, ap)
+{
+    const macs = {};
+
+    (c.mlomacs || []).forEach(l => macs[l.link] = l.mac);
+
+    return [{ link: ap && ap.mlolink >= 0 ? ap.mlolink : -1,
+              band: c.mloband, width: 0, mac: "", nstr: 0, req: true }]
+        .concat(c.mloprof.map(p => ({
+            link: p.link, band: p.band, width: p.width,
+            mac: macs[p.link] || "", nstr: p.nstr, req: false })));
+}
+
+// 2, 5, 6 as the firmware sends it; 0 = the profile does not say
+function bandName(b)
+{
+    return b ? (b === 2 ? "2.4" : b) + " GHz" : "";
+}
+
+// "6 GHz · link 2 · up to 160 MHz · c6:17:9b:ed:80:2e"
+function mloLinkText(l)
+{
+    return [bandName(l.band) || "band not given",
+            l.link >= 0 ? "link " + l.link : "",
+            l.req ? "association link" : "",
+            l.width ? "up to " + l.width + " MHz" : "",
+            l.mac].filter(Boolean).join(" \u00b7 ");
+}
+
+/*
+ * Link pairs that cannot send on one while receiving on the other
+ * (NSTR), by band: "5 + 6 GHz". A bit for a link no profile
+ * describes is the association link.
+ */
+function nstrText(links)
+{
+    const pairs = [];
+
+    const name = l => bandName(l.band) || "link " + l.link;
+
+    links.filter(l => !l.req).forEach(l =>
+    {
+        for (let n = 0; n < 16; n++)
+        {
+            if (!(l.nstr & (1 << n)))
+                continue;
+
+            const other = links.find(o => !o.req && o.link === n) ||
+                          links[0];
+
+            const pair = [name(l), name(other)].sort()
+                .join(" + ").replace(/ GHz \+/, " +");
+
+            if (!pairs.includes(pair))
+                pairs.push(pair);
+        }
+    });
+
+    return pairs.length
+        ? pairs.join(", ") + ", not sending on one while receiving " +
+          "on the other"
+        : "";
+}
+
 function bandOfChannel(ch)
 {
     return isBand24(ch) ? "2.4 GHz" : "5 GHz";
@@ -6561,33 +6642,139 @@ function featureText(c)
 
 
 /*
- * Status codes from 802.11-2020 table 9-50, the handful that
- * actually turn up. Anything else is shown by number rather
- * than guessed at.
+ * Status codes, 802.11-2020 table 9-50 and 802.11be, as hostapd
+ * names them (ieee802_11_defs.h). The ones a station meets when
+ * associating are worded for that; codes not listed are shown by
+ * number rather than guessed at.
  */
+const ASSOC_STATUS = {
+    0:   "success",
+    1:   "unspecified failure",
+    2:   "TDLS wakeup schedule rejected, alternative given",
+    3:   "TDLS wakeup schedule rejected",
+    5:   "security disabled",
+    6:   "unacceptable lifetime",
+    7:   "not in the same BSS",
+    10:  "capabilities not supported",
+    11:  "reassociation denied, no association to carry over",
+    12:  "association denied, reason outside the standard",
+    13:  "authentication algorithm not supported",
+    14:  "authentication frame out of sequence",
+    15:  "authentication rejected, challenge failure",
+    16:  "authentication timeout",
+    17:  "denied, AP is at its station limit",
+    18:  "denied, basic rates not supported",
+    19:  "denied, short preamble not supported",
+    22:  "denied, spectrum management required",
+    23:  "denied, power capability not acceptable",
+    24:  "denied, supported channels not acceptable",
+    25:  "denied, short slot time not supported",
+    27:  "denied, HT not supported by the station",
+    28:  "R0 key holder unreachable (FT)",
+    29:  "denied, PCO not supported",
+    30:  "rejected temporarily, try again later",
+    31:  "robust management frame policy violation",
+    32:  "unspecified QoS failure",
+    33:  "denied, insufficient bandwidth for QoS",
+    34:  "denied, poor channel conditions",
+    35:  "denied, QoS not supported by the station",
+    37:  "request declined",
+    38:  "invalid parameters",
+    39:  "rejected with suggested changes",
+    40:  "invalid element",
+    41:  "invalid group cipher",
+    42:  "invalid pairwise cipher",
+    43:  "invalid AKM",
+    44:  "unsupported RSN element version",
+    45:  "invalid RSN capabilities",
+    46:  "cipher suite rejected by policy",
+    47:  "traffic stream not created",
+    48:  "direct link not allowed",
+    49:  "destination station not present",
+    50:  "destination station not a QoS station",
+    51:  "denied, listen interval too large",
+    52:  "invalid FT action frame count",
+    53:  "invalid PMKID",
+    54:  "invalid mobility domain element",
+    55:  "invalid fast BSS transition element",
+    56:  "requested TCLAS not supported",
+    57:  "insufficient TCLAS processing resources",
+    58:  "try another BSS",
+    59:  "GAS advertisement protocol not supported",
+    60:  "no outstanding GAS request",
+    61:  "GAS response not received from the server",
+    62:  "timed out waiting for the GAS response",
+    63:  "GAS response larger than the query limit",
+    64:  "request refused by the home network",
+    65:  "advertisement server unreachable",
+    67:  "request refused by the subscription provider",
+    68:  "request refused, unauthenticated access not supported",
+    72:  "invalid RSN element contents",
+    73:  "U-APSD coexistence not supported",
+    74:  "U-APSD coexistence mode not supported",
+    75:  "bad interval with U-APSD coexistence",
+    76:  "anti-clogging token required (SAE)",
+    77:  "finite cyclic group not supported (SAE)",
+    78:  "cannot find alternative TBTT",
+    79:  "transmission failure",
+    80:  "requested TCLAS not supported",
+    81:  "TCLAS resources exhausted",
+    82:  "rejected, suggested BSS transition",
+    83:  "rejected with schedule",
+    84:  "rejected, no wakeup specified",
+    85:  "success, power save mode",
+    86:  "pending admitting FST session",
+    87:  "performing FST now",
+    88:  "pending, gap in block ack window",
+    89:  "rejected, U-PID setting",
+    92:  "refused for an external reason",
+    93:  "refused, AP out of memory",
+    94:  "rejected, emergency services not supported",
+    95:  "query response outstanding",
+    96:  "rejected, DSE band",
+    97:  "TCLAS processing terminated",
+    98:  "traffic stream schedule conflict",
+    99:  "denied, band and channel suggested",
+    100: "MCCAOP reservation conflict",
+    101: "MAF limit exceeded",
+    102: "MCCA track limit exceeded",
+    103: "denied, spectrum management",
+    104: "denied, VHT not supported by the station",
+    105: "enablement denied",
+    106: "restriction from authorized GDB",
+    107: "authorization deenabled",
+    112: "FILS authentication failure",
+    113: "unknown authentication server",
+    123: "unknown password identifier (SAE)",
+    124: "denied, HE not supported by the station",
+    126: "SAE hash-to-element",
+    127: "SAE-PK",
+    130: "denied, station affiliated with an MLD already associated"
+};
+
 function assocStatusText(code)
 {
-    const names = {
-        0:  "success",
-        1:  "unspecified failure",
-        10: "capabilities mismatch",
-        12: "association denied, reason outside this standard",
-        13: "authentication algorithm not supported",
-        15: "authentication timeout",
-        17: "denied, AP is at its station limit",
-        18: "denied, basic rates not supported",
-        22: "denied, association request rejected",
-        27: "denied, HT not supported by the station",
-        31: "denied, robust management frame policy mismatch",
-        34: "denied, insufficient bandwidth available",
-        37: "request declined",
-        53: "invalid PMKID",
-        76: "authentication rejected, anti-clogging token required",
-        77: "authentication rejected, finite cyclic group not supported",
-        92: "denied, VHT not supported by the station"
-    };
+    return ASSOC_STATUS[code] || ("status " + code);
+}
 
-    return names[code] || ("status " + code);
+/*
+ * What a status means beyond its name, for the notes. 30 is part
+ * of normal PMF operation: the AP still holds a protected
+ * association of the station and checks it with an SA Query
+ * before it lets the station in again.
+ */
+function assocStatusHint(c)
+{
+    if (c.status !== 30)
+        return "";
+
+    return "the AP still holds a protected (PMF) association of " +
+           "this station and checks it with an SA Query first" +
+           (c.comeback
+               ? "; try again in " + Math.round(c.comeback * 1.024) +
+                 " ms"
+               : "") +
+           ". Usually the next attempt succeeds";
 }
 
 
@@ -6696,13 +6883,19 @@ function clientTooltip(c, snapshot = false)
             if (mask & (1 << i))
                 ids.push(i);
 
+        // Since 1.68.0 the firmware sends every link with its band
+        const links = c.mloprof ? mloLinkList(c, ap) : null;
+
         html += tipSection("MULTI-LINK", [
             ["Non-AP MLD", c.mld +
                 (mldMaxLinks(c) ? ", up to " + mldMaxLinks(c) +
                                   " links at once" : "")],
-            ["Requested", ids.length ? "links " + ids.join(", ") : ""],
-            ["Addresses", (c.mlomacs || [])
-                .map(l => "link " + l.link + " " + l.mac).join(", ")],
+            links
+                ? ["Links", links.map(mloLinkText).join("<br>")]
+                : ["Requested", ids.length ? "links " + ids.join(", ") : ""],
+            links ? ["NSTR", nstrText(links)]
+                  : ["Addresses", (c.mlomacs || [])
+                        .map(l => "link " + l.link + " " + l.mac).join(", ")],
             ["EML", emlText(c)],
             ["MLD", mldCapText(c)]
         ]);
@@ -6771,10 +6964,12 @@ function clientTooltip(c, snapshot = false)
 
     if (c.status >= 0)
     {
-        const bad = (c.status !== 0);
+        // 30 is part of normal PMF operation, see assocStatusHint()
+        const colour = c.status === 0 ? "#8fbf8f"
+                     : c.status === 30 ? "#c8a050" : "#d08080";
 
-        last = "<span style='color:" + (bad ? "#d08080" : "#8fbf8f") +
-               "'>" + assocStatusText(c.status) + " from " +
+        last = "<span style='color:" + colour + "'>" +
+               assocStatusText(c.status) + " (" + c.status + ") from " +
                escapeHTML(c.statusbss) +
                (snapshot ? "" : ", " + uptimeText(c.statusago) + " ago") +
                "</span>" +
@@ -6819,9 +7014,12 @@ function stationNotes(c, snapshot)
 
     if (c.status > 0)
     {
+        const hint = assocStatusHint(c);
+
         notes.push(["#c8a050", "Last association rejected by " +
                     escapeHTML(apNameFor(c.statusbss)) + ": " +
-                    assocStatusText(c.status)]);
+                    assocStatusText(c.status) + " (" + c.status + ")" +
+                    (hint ? "; " + hint : "")]);
     }
 
     if (!snapshot && probeRate(c) >= 20 && !c.assoc)
