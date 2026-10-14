@@ -4355,6 +4355,21 @@ function showSnapshotList(list)
     snapshotList = list.snapshots;
 }
 
+/*
+ * The sensor did not answer. Not while a snapshot is shown: the
+ * sensor is not asked then, and a part the snapshot left out (the
+ * spectrum, say) answers 404. That put "Connection lost" in the
+ * status line every poll round and the next round took it away
+ * again, the whole page jumping by a line each time.
+ */
+function showOffline()
+{
+    if (snapshotView)
+        return;
+
+    document.getElementById("status").innerText = offlineText();
+}
+
 // What the status line says when the sensor does not answer
 function offlineText()
 {
@@ -11609,7 +11624,7 @@ async function updateLive()
     }
     catch (e)
     {
-        document.getElementById("status").innerText = offlineText();
+        showOffline();
     }
 }
 
@@ -12372,7 +12387,7 @@ async function updateStatus()
     {
         deviceOnline = false;
 
-        document.getElementById("status").innerText = offlineText();
+        showOffline();
     }
 }
 
