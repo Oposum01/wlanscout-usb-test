@@ -511,6 +511,23 @@ tbody tr.assocSeen.highlight {
     }
 }
 
+/* Pinned by a click: it takes the mouse, see pinOnClick() */
+#tip.pinned {
+    pointer-events: auto;
+    padding-top: 26px;
+    border-color: #4ea3d8;
+}
+
+#tip.pinned .tipClose {
+    display: block;
+}
+
+#tip .tipHint {
+    margin-top: 6px;
+    color: #777;
+    font-size: 11px;
+}
+
 /* Phones held upright: less padding, so more of a row fits */
 @media (max-width: 700px) {
     .section {
@@ -3059,13 +3076,18 @@ const USB_VENDOR_ESPRESSIF = 0x303a;
 /*
  * Reads the answers out of the byte stream. Bytes before the
  * start byte are skipped, so a half answer after a reset does no
- * harm.
+ * harm; but for USB_PUT_ACK, the sensor's go-ahead for the next
+ * piece of a PUT.
  */
+const USB_PUT_PIECE = 2048;
+const USB_PUT_ACK = 0x06;
+
 class UsbAnswerParser
 {
-    constructor(onAnswer)
+    constructor(onAnswer, onAck = () => { })
     {
         this.onAnswer = onAnswer;
+        this.onAck = onAck;
         this.reset();
     }
 
@@ -3086,10 +3108,16 @@ class UsbAnswerParser
         {
             if (this.state === "idle")
             {
-                if (bytes[i++] === 0x02)
+                const b = bytes[i++];
+
+                if (b === 0x02)
                 {
                     this.state = "head";
                     this.head = [];
+                }
+                else if (b === USB_PUT_ACK)
+                {
+                    this.onAck();
                 }
             }
             else if (this.state === "head")
@@ -3189,7 +3217,9 @@ class UsbLink
         this.closed = false;
         this.queue = [];
         this.current = null;
-        this.parser = new UsbAnswerParser(a => this.answered(a));
+        this.parser = new UsbAnswerParser(a => this.answered(a),
+                                          () => this.acked());
+        this.ackWaiter = null;
     }
 
     // The device: chosen by the user, or one already allowed (a
@@ -3307,20 +3337,59 @@ class UsbLink
         this.sendBody(c).catch(e => this.fail(e));
     }
 
+    /*
+     * The bytes go in pieces of USB_PUT_PIECE, each but the last
+     * after the sensor's USB_PUT_ACK for the one before: it drops
+     * what does not fit its receive queue while it writes the flash.
+     */
     async sendBody(c)
     {
         await this.device.transferOut(this.epOut.endpointNumber,
             new TextEncoder().encode("PUT " + c.url + "\n"));
 
-        for (let at = 0; at < c.body.length && !this.closed; at += 16384)
+        for (let at = 0; at < c.body.length && !this.closed;
+             at += USB_PUT_PIECE)
         {
+            const end = Math.min(at + USB_PUT_PIECE, c.body.length);
+            const ack = end < c.body.length ? this.nextAck() : null;
+
             await this.device.transferOut(this.epOut.endpointNumber,
-                c.body.subarray(at, at + 16384));
+                c.body.subarray(at, end));
 
             if (c.progress)
-                c.progress(Math.min(at + 16384, c.body.length),
-                           c.body.length);
+                c.progress(end, c.body.length);
+
+            // No go-ahead: stop sending; the sensor gives up after
+            // 10 s without data and answers with its error
+            if (ack && !await ack)
+                break;
         }
+    }
+
+    // True on the sensor's next USB_PUT_ACK, false after 15 s
+    nextAck()
+    {
+        return new Promise(resolve =>
+        {
+            const timer = setTimeout(() =>
+            {
+                this.ackWaiter = null;
+                resolve(false);
+            }, 15000);
+
+            this.ackWaiter = () =>
+            {
+                clearTimeout(timer);
+                this.ackWaiter = null;
+                resolve(true);
+            };
+        });
+    }
+
+    acked()
+    {
+        if (this.ackWaiter)
+            this.ackWaiter();
     }
 
     answered(answer)
@@ -4480,9 +4549,17 @@ if (navigator.usb)
 let usbReconnect = false;
 
 
-function showTip(html, clientX, clientY)
+function showTip(html, clientX, clientY, pinnable = false)
 {
     const tip = document.getElementById("tip");
+
+    // Pinned: the mouse going over other rows leaves it alone
+    if (tipPinned && /^mouse/.test((window.event || {}).type || ""))
+        return;
+
+    // How to keep it open, for the mouse on a table row
+    if (pinnable && !tipPinned && lastPointerType === "mouse")
+        html += "<div class='tipHint'>click the row to keep it open</div>";
 
     // What is on screen: on a phone the page can be wider than
     // that, and a tooltip placed by the page width ran off it
@@ -4539,8 +4616,8 @@ document.addEventListener("pointerdown", e =>
 
     lastPointerType = e.pointerType;
 
-    if (e.pointerType !== "mouse" && tip.style.display === "block" &&
-        !tip.contains(e.target))
+    if ((e.pointerType !== "mouse" || tipPinned) &&
+        tip.style.display === "block" && !tip.contains(e.target))
     {
         hideTip();
     }
@@ -4555,6 +4632,41 @@ document.addEventListener("pointerdown", e =>
  * the tooltip: the row saw the mouse leave and closed it again. So
  * for a moment after a tap it lets them through to the row.
  */
+/*
+ * With a mouse the tooltip follows the pointer and lets it through,
+ * so nothing in it could be clicked, a map link say. A click on a
+ * table row pins it where it is: it takes the mouse, scrolls, has
+ * the close button, and stays while the pointer moves on, until the
+ * close button, Escape or a click outside it. On a touch screen a
+ * tooltip opened by a tap stays anyway.
+ */
+let tipPinned = false;
+
+function pinOnClick(tr, makeHtml)
+{
+    tr.addEventListener("click", ev =>
+    {
+        if (lastPointerType !== "mouse" ||
+            ev.target.closest("a, button, input"))
+            return;
+
+        tipPinned = false;
+        showTip(makeHtml(), ev.clientX, ev.clientY);
+
+        const tip = document.getElementById("tip");
+
+        tipPinned = true;
+        tip.classList.add("pinned");
+        tip.style.pointerEvents = "";
+    });
+}
+
+document.addEventListener("keydown", e =>
+{
+    if (e.key === "Escape" && tipPinned)
+        hideTip();
+});
+
 /*
  * After a tap the browser keeps a mouse pointer where the finger was,
  * and sends mouseover, mouseenter, mousemove and mouseleave again
@@ -4608,6 +4720,12 @@ function letTapThrough(tip)
 
 function hideTip()
 {
+    if (tipPinned && /^mouse/.test((window.event || {}).type || ""))
+        return;
+
+    tipPinned = false;
+    document.getElementById("tip").classList.remove("pinned");
+
     document.getElementById("tip").style.display = "none";
 }
 
@@ -9830,15 +9948,17 @@ function updateBleTable()
 
         tr.addEventListener("mouseenter", ev =>
         {
-            showTip(bleTooltip(d), ev.clientX, ev.clientY);
+            showTip(bleTooltip(d), ev.clientX, ev.clientY, true);
         });
 
         tr.addEventListener("mousemove", ev =>
         {
-            showTip(bleTooltip(d), ev.clientX, ev.clientY);
+            showTip(bleTooltip(d), ev.clientX, ev.clientY, true);
         });
 
         tr.addEventListener("mouseleave", hideTip);
+
+        pinOnClick(tr, () => bleTooltip(d));
 
         tbody.appendChild(tr);
     });
@@ -10949,15 +11069,17 @@ function updateSixTable()
 
         tr.addEventListener("mouseenter", ev =>
         {
-            showTip(sixTooltip(e), ev.clientX, ev.clientY);
+            showTip(sixTooltip(e), ev.clientX, ev.clientY, true);
         });
 
         tr.addEventListener("mousemove", ev =>
         {
-            showTip(sixTooltip(e), ev.clientX, ev.clientY);
+            showTip(sixTooltip(e), ev.clientX, ev.clientY, true);
         });
 
         tr.addEventListener("mouseleave", hideTip);
+
+        pinOnClick(tr, () => sixTooltip(e));
 
         tbody.appendChild(tr);
     });
@@ -11112,12 +11234,12 @@ function updateNetworkTable()
             drawNetworkGraph();
             highlightTableRow();
 
-            showTip(networkTooltip(n), ev.clientX, ev.clientY);
+            showTip(networkTooltip(n), ev.clientX, ev.clientY, true);
         });
 
         tr.addEventListener("mousemove", ev =>
         {
-            showTip(networkTooltip(n), ev.clientX, ev.clientY);
+            showTip(networkTooltip(n), ev.clientX, ev.clientY, true);
         });
 
         tr.addEventListener("mouseleave", () =>
@@ -11129,6 +11251,8 @@ function updateNetworkTable()
             drawNetworkGraph();
             highlightTableRow();
         });
+
+        pinOnClick(tr, () => networkTooltip(n));
 
         tbody.appendChild(tr);
     });
@@ -11405,15 +11529,17 @@ function fillClientTable(tbodyId, list, columns = clientColumns,
 
         tr.addEventListener("mouseenter", ev =>
         {
-            showTip(clientTooltip(c, snapshot), ev.clientX, ev.clientY);
+            showTip(clientTooltip(c, snapshot), ev.clientX, ev.clientY, true);
         });
 
         tr.addEventListener("mousemove", ev =>
         {
-            showTip(clientTooltip(c, snapshot), ev.clientX, ev.clientY);
+            showTip(clientTooltip(c, snapshot), ev.clientX, ev.clientY, true);
         });
 
         tr.addEventListener("mouseleave", hideTip);
+
+        pinOnClick(tr, () => clientTooltip(c, snapshot));
 
         tbody.appendChild(tr);
     });
