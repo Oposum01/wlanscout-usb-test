@@ -449,6 +449,11 @@ tbody tr.assocSeen.highlight {
     margin-bottom: 10px;
 }
 
+/* Right end of the row, above the graph's top right corner */
+.flushBtn {
+    margin-left: auto;
+}
+
 .small {
     font-size: 12px;
     color: #888;
@@ -1064,6 +1069,12 @@ Clear
       id="filterInfo">
 </span>
 
+<button class="flushBtn"
+        title="Empty the network table; it fills again from what is heard next"
+        onclick="uiAction(window.flushTable, 'networks')">
+Flush
+</button>
+
 </div>
 
 
@@ -1225,6 +1236,12 @@ Clear
 <span class="small"
       id="clientInfo">
 </span>
+
+<button class="flushBtn"
+        title="Empty the station table; it fills again from what is heard next"
+        onclick="uiAction(window.flushTable, 'stations')">
+Flush
+</button>
 
 </div>
 
@@ -2604,6 +2621,44 @@ function clearBuffer(what)
 }
 
 window.clearBuffer = clearBuffer;
+
+
+/*
+ * Flush button: the sensor forgets the network or station table
+ * (with the 6 GHz list or the names learned from stations), the
+ * page drops its copy and fetches the table again.
+ */
+function flushTable(what)
+{
+    const name = what === "networks" ? "network" : "station";
+
+    if (!confirm("Discard everything in the " + name + " table? " +
+                 "It fills again from what is heard next."))
+        return;
+
+    queueCommand("/api/flush?what=" + what, () =>
+    {
+        // Emptied at once, also while paused
+        if (what === "networks")
+        {
+            networks = [];
+            sixGhzList = [];
+            updateNetworkTable();
+            updateSixTable();
+            drawNetworkGraph();
+            updateNetworks();
+        }
+        else
+        {
+            stations = [];
+            updateClientTable();
+            drawClientGraph();
+            updateClients();
+        }
+    });
+}
+
+window.flushTable = flushTable;
 
 
 function toggleScanPanel(force)
@@ -4264,7 +4319,6 @@ function showSnapshotList(list)
         box.checked = list.parts === undefined ||
                       !!(list.parts & Number(box.dataset.bit));
     });
-
     table.innerHTML = list.snapshots.slice().reverse().map(s =>
         "<tr><td>" + s.seq + "</td>" +
         "<td>" + (s.name ? "<b>" + escapeHTML(s.name) + "</b>" : "") +
@@ -5348,6 +5402,15 @@ function matchesFilter(n)
         n.cc,
         n.mfpr ? "pmf" : "",
         n.wps ? "wps" : "",
+        n.ibss ? "ibss adhoc" : "",
+        n.rid ? "drone remote id " + ridMaker(n.rid) + " " +
+                (RID_UA_TYPES[n.rid.ua] || "") + " " + (n.rid.sid || "")
+              : "",
+        n.color ? "bss colour color " + n.color[0] : "",
+        n.bcc ? "colour change color change" : "",
+        n.maxidle ? "max idle" : "",
+        n.wfacapa !== undefined
+            ? "qos management " + wfaCapaText(n.wfacapa) : "",
         (n.basicrates || []).length
             ? "basic rates " + n.basicrates.map(r => r / 2).join(" ")
             : "basic rates none marked basic",
@@ -5497,6 +5560,7 @@ function drawLoadHatch(ctx, bands, nets, top, bottom)
 
                 graphLoad.push({
                     x0: x0, x1: x1,
+                    f0: f0, f1: f1,
                     util: load[i],
                     nets: nets.filter(n =>
                     {
@@ -6381,6 +6445,26 @@ function networkNotes(n)
             "does nothing here; likely a misconfiguration"]);
     }
 
+    if (n.rid && n.rid.st === 3)
+    {
+        notes.push([red,
+            "The drone reports an emergency in its Remote ID"]);
+    }
+
+    if (n.bcc && n.bcc[2] > 1)
+    {
+        notes.push([blue,
+            "BSS colour switched " + n.bcc[2] + " times: another BSS " +
+            "on the channel keeps picking the same colour"]);
+    }
+
+    if (n.tsfreset && n.tsfreset[1] < 3600)
+    {
+        notes.push([blue,
+            "Beacon timestamp went back " + uptimeText(n.tsfreset[1]) +
+            " ago: the AP restarted, or at least its radio"]);
+    }
+
     if (n.mbssid)
     {
         notes.push([amber,
@@ -6689,13 +6773,19 @@ function tipSection(title, rows)
     return body ? "<div class='tipSec'>" + title + "</div>" + body : "";
 }
 
+// Red first, then amber, blue, and pink last
+const NOTE_ORDER = { "#d08080": 0, "#c8a050": 1, "#7aaed0": 2, "#e070c0": 3 };
+
 // The notes as coloured bullets, last in every tooltip
 function tipNotes(notes)
 {
     if (!notes.length)
         return "";
 
-    return "<div class='tipSec'>NOTES</div>" + notes.map(note =>
+    const sorted = notes.slice().sort((a, b) =>
+        (NOTE_ORDER[a[0]] ?? 4) - (NOTE_ORDER[b[0]] ?? 4));
+
+    return "<div class='tipSec'>NOTES</div>" + sorted.map(note =>
         "<span style='color:" + note[0] + "'>\u2022 " + note[1] +
         "</span>").join("<br>");
 }
@@ -6774,7 +6864,8 @@ function apClockText(n)
  * Who made the Wi-Fi chip, by the OUI of a vendor element its
  * driver adds to every beacon. Metalink is the WLAN part of
  * Lantiq, later Intel and now MaxLinear. Texas Instruments' ACX
- * chips sat in early 802.11g routers, FRITZ!Boxes among them. Any other OUI in a
+ * chips sat in early 802.11g routers, FRITZ!Boxes among them. Intel's
+ * 00:17:35 comes from the driver of its client chips. Any other OUI in a
  * vendor element names the maker of the device itself.
  *
  * Some Broadcom (Epigram) elements are copied by other chips so
@@ -6800,7 +6891,7 @@ const WIFI_CHIP_OUIS = {
     "000986": "MaxLinear (Lantiq)", "005043": "Marvell",
     "18FE34": "Espressif", "001C51": "Celeno",
     "4045DA": "Unisoc (Spreadtrum)", "00025B": "CSR (Qualcomm)",
-    "080028": "Texas Instruments"
+    "080028": "Texas Instruments", "001735": "Intel"
 };
 
 /*
@@ -6830,9 +6921,10 @@ const MAKER_NAMES = {
 /*
  * OUIs that say nothing about the maker: 00:00:0F (NeXT) shows up
  * in odd elements, 00:02:BC (LVL7) wrote the software D-Link and
- * others ran, not the device.
+ * others ran, not the device. 00:13:74 is the OUI hostapd uses for
+ * its QCA elements, built in whatever the chip.
  */
-const NO_MAKER_OUIS = ["00000F", "0002BC"];
+const NO_MAKER_OUIS = ["00000F", "0002BC", "001374"];
 
 function ouiColons(hex)
 {
@@ -7228,15 +7320,127 @@ function acmText(n)
 }
 
 // Top right of the AP and the station tooltip: BEST GUESS
+/*
+ * Drone Remote ID (ASTM F3411), decoded by the firmware: what the
+ * drone broadcasts by law for anyone to read, the pilot's position
+ * included. Of the serial number only its manufacturer code comes
+ * along (ANSI/CTA-2063-A); 1581 is DJI's.
+ */
+const RID_UA_TYPES = ["drone", "aeroplane", "multirotor", "gyroplane",
+    "VTOL", "ornithopter", "glider", "kite", "free balloon",
+    "captive balloon", "airship", "parachute", "rocket",
+    "tethered aircraft", "ground obstacle", "aircraft"];
+
+const RID_STATUS = ["status undeclared", "on the ground", "airborne",
+    "emergency", "Remote ID system failure"];
+
+const RID_MAKERS = { "1581": "DJI" };
+
+// Altitudes come as value / 2 - 1000 m, 0 meaning unknown
+function ridMetres(raw)
+{
+    return raw ? raw / 2 - 1000 : null;
+}
+
+function ridMetresText(raw)
+{
+    const m = ridMetres(raw);
+
+    return m === null ? "" : (Math.round(m * 10) / 10) + " m";
+}
+
+// A position on OpenStreetMap, the marker on it
+function ridMapLink(lat, lon, label)
+{
+    if (!lat && !lon)
+        return "";
+
+    const y = (lat / 1e7).toFixed(6), x = (lon / 1e7).toFixed(6);
+
+    return "<a class='dl' target='_blank' rel='noopener' " +
+        "href='https://www.openstreetmap.org/?mlat=" + y + "&mlon=" + x +
+        "#map=17/" + y + "/" + x + "'>" + label + "</a> " + y + ", " + x;
+}
+
+function ridMaker(r)
+{
+    return RID_MAKERS[r.mk] || "";
+}
+
+function ridDeviceText(r)
+{
+    return "Drone" + (r.ua > 0 && r.ua !== 2 ? " (" + RID_UA_TYPES[r.ua] + ")"
+                                            : "");
+}
+
+// "45 m above takeoff"
+function ridHeightText(r)
+{
+    const h = ridMetresText(r.h);
+
+    return h ? h + (r.hagl ? " above ground" : " above takeoff") : "";
+}
+
+// EU classification: category and class C0 to C6
+function ridEuText(eu)
+{
+    if (!eu)
+        return "";
+
+    const cat = ["", "open", "specific", "certified"][eu >> 4] || "";
+    const cls = (eu & 15) ? "class C" + ((eu & 15) - 1) : "";
+
+    return [cat ? cat + " category" : "", cls].filter(x => x).join(", ");
+}
+
+function ridSpeedText(r)
+{
+    if (r.spd === undefined || r.spd < 0)
+        return "";
+
+    return (r.spd / 100).toFixed(1) + " m/s" +
+        (r.trk !== undefined && r.trk <= 360 ? " towards " + r.trk + "\u00b0"
+                                            : "") +
+        (r.vs ? ", " + (r.vs > 0 ? "climbing " : "descending ") +
+                (Math.abs(r.vs) / 100).toFixed(1) + " m/s" : "");
+}
+
+function ridRows(r)
+{
+    return [
+        ["Status", r.st !== undefined ? RID_STATUS[r.st] || "status " + r.st
+                                      : ""],
+        ["Height", ridHeightText(r)],
+        ["Altitude", [ridMetresText(r.ag) ? ridMetresText(r.ag) + " GNSS" : "",
+                      ridMetresText(r.ab) ? ridMetresText(r.ab) +
+                                            " barometric" : ""]
+                         .filter(x => x).join(", ")],
+        ["Speed", ridSpeedText(r)],
+        ["Drone", ridMapLink(r.lat, r.lon, "map")],
+        ["Pilot", ridMapLink(r.olat, r.olon, "map") +
+            (ridMetresText(r.oalt) ? ", " + ridMetresText(r.oalt) +
+                                     " altitude" : "")],
+        ["Class", ridEuText(r.eu)],
+        ["Self-ID", r.sid ? escapeHTML(r.sid) : ""],
+        ["Report", r.ago !== undefined ? r.ago + " s ago" : ""]
+    ];
+}
+
+
 function apMakerHeader(n)
 {
     const m = apMakers(n);
 
     const rows = [];
 
-    if (m.makers.length)
+    const makers = m.makers.slice();
+
+    if (n.rid && ridMaker(n.rid) && !makers.includes(ridMaker(n.rid)))
+        makers.push(ridMaker(n.rid));
+
+    if (makers.length)
         rows.push(["Manufacturer",
-                   m.makers.map(escapeHTML).join(" \u00b7 ")]);
+                   makers.map(escapeHTML).join(" \u00b7 ")]);
 
     if (m.chips.length)
         rows.push(["Chip", m.chips.map(escapeHTML).join(" / ")]);
@@ -7245,7 +7449,19 @@ function apMakerHeader(n)
     // SECURITY rows, it is not always set or not always right
     const iw = interworking(n);
 
-    if (iw && iw.group === 10)
+    if (n.rid)
+    {
+        // What a drone says about itself, by law; details below
+        rows.push(["Device", ridDeviceText(n.rid)]);
+
+        if (ridHeightText(n.rid))
+            rows.push(["Height", ridHeightText(n.rid)]);
+
+        if (n.rid.olat || n.rid.olon)
+            rows.push(["Pilot", ridMapLink(n.rid.olat, n.rid.olon, "map")
+                                    .replace(/<\/a>.*/, "</a>")]);
+    }
+    else if (iw && iw.group === 10)
         rows.push(["Device", "Vehicle"]);
     else if (n.hp)
         rows.push(["Device", "Printer"]);
@@ -7319,6 +7535,11 @@ function networkTooltip(n)
         (n.vendor ? " (" + escapeHTML(n.vendor) + ")" : "") +
         "<br>RSSI " + n.rssi + " dBm \u00b7 last seen " + n.age + " s ago";
 
+    // ---- drone ------------------------------------------
+
+    if (n.rid)
+        html += tipSection("REMOTE ID", ridRows(n.rid));
+
     // ---- radio ------------------------------------------
 
     html += tipSection("RADIO", [
@@ -7334,6 +7555,9 @@ function networkTooltip(n)
             modeList(n.modes) ? "announces " + modeList(n.modes) : "",
             n.nss ? n.nss + " spatial stream" + (n.nss > 1 ? "s" : "") : ""])],
         ["Basic rates", basicRateText(n)],
+        ["Ad-hoc", ibssText(n)],
+        ["QoS Mgmt", wfaCapaText(n.wfacapa)],
+        ["BSS colour", bssColorText(n)],
         ["Multiple BSSID", n.mbssid ? "element present" : ""],
         ["Vendor IEs", vendorOuiText(n)],
         ["Apple accessory", escapeHTML(appleAccText(n))],
@@ -7462,12 +7686,14 @@ function networkTooltip(n)
             "beacon " + n.bi + " TU (" + (n.bi * 1.024).toFixed(0) + " ms)"])],
         ["Extended", xloadText(n)],
         ["Admission", aacText(n)],
+        ["Max idle", maxIdleText(n.maxidle)],
         ["ERP", erpText(n.erp)]
     ]);
 
     // ---- time -------------------------------------------
 
     html += tipSection("TIME", [
+        ["Up", tsfUpText(n)],
         ["Clock", apClockText(n)],
         ["Zone", n.aptz ? escapeHTML(n.aptz) : ""]
     ]);
@@ -8124,6 +8350,43 @@ function probeRate(c)
  * last association request. Its counters and ages stop there, so
  * the tooltip leaves them out and gives the absolute times.
  */
+/*
+ * Wi-Fi QoS Management from the Wi-Fi Alliance Capabilities
+ * element (50:6F:9A 0x23): whether an AP or a station takes DSCP
+ * policies (which traffic goes in which access category) and
+ * SCS traffic descriptions. "" without the element.
+ */
+function wfaCapaText(capa)
+{
+    if (capa === undefined)
+        return "";
+
+    const parts = [];
+
+    if (capa & 1) parts.push("DSCP policy");
+    if (capa & 2) parts.push("unsolicited DSCP policy");
+    if (capa & 4) parts.push("SCS traffic description");
+
+    return parts.length ? parts.join(", ") : "element without capabilities";
+}
+
+
+/*
+ * RSN Selection (50:6F:9A 0x2C) of a station's association request:
+ * which of the AP's RSN elements it took. The overrides are what an
+ * AP offers newer clients, WPA3 with GCMP-256 say, next to the RSNE
+ * older ones read.
+ */
+function rsnSelText(sel)
+{
+    if (sel === undefined)
+        return "";
+
+    return ["RSNE", "RSNE Override", "RSNE Override 2"][sel] ||
+           "unknown value " + sel;
+}
+
+
 function clientTooltip(c, snapshot = false)
 {
     const apName = apNameFor(c.bssid);
@@ -8172,6 +8435,7 @@ function clientTooltip(c, snapshot = false)
         ["Bands", bandsText(c)],
         ["Channels", chans ? chans + " (from assoc request)" : ""],
         ["Also", join([c.wmm ? "WMM" : "", c.band6 ? "6 GHz" : ""])],
+        ["QoS Mgmt", wfaCapaText(c.wfacapa)],
         ["Vendor IEs", vendorOuiText(c)]
     ]);
 
@@ -8181,7 +8445,10 @@ function clientTooltip(c, snapshot = false)
         [null, join([
             c.akm ? "AKM " + escapeHTML(c.akm) : "",
             c.cipher ? "cipher " + escapeHTML(c.cipher) : "",
-            c.pmf ? "PMF" : ""])]
+            c.pmf ? "PMF" : ""])],
+        ["Selected", rsnSelText(c.rsnsel)
+            ? rsnSelText(c.rsnsel) + " (RSN selection, from assoc request)"
+            : ""]
     ]);
 
     // ---- roaming ----------------------------------------
@@ -8242,7 +8509,11 @@ function clientTooltip(c, snapshot = false)
     if (c.roams)
     {
         roaming = c.roams + " time" + (c.roams === 1 ? "" : "s") +
-                  (c.roamsok ? " (" + c.roamsok + " via assoc request)" : "");
+                  (c.roamsok ? " (" + c.roamsok + " via assoc request" +
+                               (c.roamsft ? ", " + c.roamsft +
+                                            " of them by fast transition"
+                                          : "") + ")"
+                             : "");
 
         // Average interval says more than the raw count
         if (c.seen > 0 && c.roams > 1)
@@ -8257,7 +8528,8 @@ function clientTooltip(c, snapshot = false)
         return r.ago + " s ago &rarr; " +
                (name === r.bssid ? r.bssid
                                  : escapeHTML(name) + " (" + r.bssid + ")") +
-               (r.ok ? " [assoc request]" : "");
+               (r.ft ? " [fast transition]"
+                     : r.ok ? " [assoc request]" : "");
     });
 
     html += tipSection("TRAFFIC", snapshot ? [
@@ -8309,6 +8581,7 @@ function clientTooltip(c, snapshot = false)
     html += tipSection("ASSOCIATION", [
         ["Last", last],
         ["SSID", c.joined ? escapeHTML(c.joined) : ""],
+        ["Max idle", stationIdleText(c.maxidle)],
         ["First", snapshot && c.firstepoch
             ? stampText(c.firstepoch, 0) : ""],
         ["Latest", snapshot && c.lastepoch
@@ -8409,10 +8682,68 @@ function loadAt(x, y)
 }
 
 
+/*
+ * The 20 MHz channels a stretch of the hatch covers: those lying
+ * inside it, give or take the 2 MHz bins, or else the one it lies
+ * nearest to. "36\u201348" for a run of them, "1, 6" otherwise.
+ */
+function stretchChannels(f0, f1)
+{
+    const all = [];
+
+    if (f1 < 3000)
+    {
+        for (let ch = 1; ch <= 13; ch++)
+            all.push([ch, 2407 + 5 * ch]);
+
+        all.push([14, 2484]);
+    }
+    else if (f0 < 5925)
+    {
+        for (let ch = 32; ch <= 177; ch += 4)
+            all.push([ch, 5000 + 5 * ch]);
+    }
+    else
+    {
+        for (let ch = 1; ch <= 233; ch += 4)
+            all.push([ch, 5950 + 5 * ch]);
+    }
+
+    let inside = all.filter(([, c]) => c - 10 >= f0 - 2 && c + 10 <= f1 + 2)
+                    .map(([ch]) => ch);
+
+    // Narrower than a channel: the one whose centre is nearest
+    if (!inside.length)
+    {
+        const mid = (f0 + f1) / 2;
+
+        inside = [all.reduce((a, b) =>
+            Math.abs(b[1] - mid) < Math.abs(a[1] - mid) ? b : a)[0]];
+    }
+
+    if (!inside.length)
+        return "";
+
+    const step = f1 < 3000 ? 1 : 4;
+    const run  = inside.every((ch, i) => !i || ch - inside[i - 1] === step);
+
+    return (inside.length === 1 ? "channel " : "channels ") +
+        (run && inside.length > 1
+            ? inside[0] + "\u2013" + inside[inside.length - 1]
+            : inside.join(", "));
+}
+
+
 function loadTooltip(r)
 {
+    const where = r.f0 !== undefined
+        ? stretchChannels(r.f0, r.f1) + " (" + Math.round(r.f0) + "\u2013" +
+          Math.round(r.f1) + " MHz)"
+        : "";
+
     let html =
-        "<b>Reported airtime " + r.util + " %</b><br>" +
+        "<b>Reported airtime " + r.util + " %</b>" +
+        (where ? " on " + where : "") + "<br>" +
         "Busiest reporter over this stretch of spectrum.<br><br>";
 
     r.nets
@@ -8421,8 +8752,9 @@ function loadTooltip(r)
         .forEach(n =>
         {
             html +=
-                escapeHTML(n.ssid || "&lt;hidden&gt;") + " " +
-                escapeHTML(n.bssid) + ": " + n.util + " %<br>";
+                escapeHTML(n.ssid || "<hidden>") + " " +
+                escapeHTML(n.bssid) + ": " + n.util + " % (channel " +
+                n.channel + ", " + bandwidthText(n.bandwidth) + ")<br>";
         });
 
     html +=
@@ -9947,9 +10279,101 @@ function noteScoreOf(notes)
  * protected. Anything odd about the BSS lives in the notes
  * column, not here.
  */
+/*
+ * An IBSS has no AP: its stations take turns sending the beacon,
+ * all with the same BSSID. The ATIM window is how long they stay
+ * awake after each beacon to announce buffered frames.
+ */
+/*
+ * BSS colour (802.11ax): HE stations ignore frames of another
+ * colour for spatial reuse. An AP switches when it finds a
+ * neighbour on the channel using its colour, announcing the new
+ * one over a few beacons; bcc is [new colour, seconds since, how
+ * many switches seen].
+ */
+function bssColorText(n)
+{
+    const parts = [];
+
+    if (n.color)
+        parts.push(n.color[0] + (n.color[1] ? " (disabled)" : ""));
+
+    if (n.bcc)
+        parts.push("switch to " + n.bcc[0] + " announced " +
+                   uptimeText(n.bcc[1]) + " ago" +
+                   (n.bcc[2] > 1 ? ", " + n.bcc[2] + " switches seen" : ""));
+
+    return parts.join(" \u00b7 ");
+}
+
+
+/*
+ * BSS Max Idle Period (90): how long the AP keeps a station that
+ * sends nothing associated; a sleeping station has to send a
+ * keep-alive within it. Units of 1000 TU, 1.024 s.
+ */
+// [asked, options, granted, options] of a station
+function stationIdleText(v)
+{
+    if (!v)
+        return "";
+
+    return [v[0] ? "asks " + maxIdleText(v.slice(0, 2)) : "",
+            v[2] ? "AP grants " + maxIdleText(v.slice(2, 4)) : ""]
+        .filter(x => x).join(" \u00b7 ");
+}
+
+
+function maxIdleText(v)
+{
+    if (!v || !v[0])
+        return "";
+
+    return Math.round(v[0] * 1.024) + " s" +
+        (v[1] & 1 ? ", protected keep-alive" : "");
+}
+
+
+/*
+ * The beacon timestamp runs from when the BSS started, usually
+ * when the AP booted. Some APs start it elsewhere, so anything
+ * beyond three years is not taken for an uptime.
+ */
+function tsfUpText(n)
+{
+    if (n.tsfup === undefined)
+        return "";
+
+    const up = n.tsfup > 3 * 365 * 86400
+        ? "timer not counting from the start"
+        : "\u2248 " + uptimeText(n.tsfup) + " (beacon timestamp)";
+
+    return up + (n.tsfreset
+        ? ", reset " + uptimeText(n.tsfreset[1]) + " ago" +
+          (n.tsfreset[0] > 1 ? " (" + n.tsfreset[0] + " resets seen)" : "")
+        : "");
+}
+
+
+function ibssText(n)
+{
+    if (!n.ibss)
+        return "";
+
+    return "IBSS, no access point: the stations send the beacons " +
+        "in turn" +
+        (n.atim === undefined ? ""
+            : n.atim ? ", ATIM window " + n.atim + " TU"
+            : ", ATIM window 0 (no power save)");
+}
+
+
 function apCapsText(n)
 {
     const flags = [];
+
+    // No AP at all: a client joins it differently
+    if (n.ibss) flags.push("Ad-hoc");
 
     if (n.k) flags.push("11k");
     if (n.v) flags.push("11v");
@@ -10769,9 +11193,15 @@ function stationMatches(c)
         channelsText(c),
         c.akm, c.cipher, c.pmf ? "pmf" : "",
         c.wmm ? "wmm" : "",
+        c.wfacapa !== undefined
+            ? "qos management " + wfaCapaText(c.wfacapa) : "",
+        c.rsnsel !== undefined
+            ? "rsn selection " + rsnSelText(c.rsnsel) : "",
         c.k ? "11k " + rrmText(c.rrm || 0) : "",
         c.v || c.wnm ? "11v " + wnmText(c.wnm || 0) : "",
         c.r ? "11r" : "",
+        c.roamsft ? "fast transition ft roam" : "",
+        c.maxidle ? "max idle" : "",
         c.mld ? "mlo mld " + c.mld : "",
         c.assoc ? "associated" : "probing",
         m.makers.join(" "),
@@ -11168,10 +11598,14 @@ const VENDOR_IE_NAMES = {
     0x000C4200: "MikroTik radio name",
     0x08000900: "HP printer info",
     0x00904C04: "Broadcom VHT (2.4 GHz 256-QAM)",
+    0x00137401: "QCA HE Capabilities (pre-802.11ax)",
+    0x00137402: "QCA HE Operation (pre-802.11ax)",
     0x00904C33: "HT Capabilities (pre-802.11n)",
     0x00904C34: "HT Information (pre-802.11n)",
     0x506F9A09: "P2P (Wi-Fi Direct)", 0x506F9A0A: "Wi-Fi Display",
     0x506F9A10: "Hotspot 2.0 Indication", 0x506F9A12: "OSEN",
+    0x506F9A23: "Wi-Fi Alliance Capabilities (QoS Management)",
+    0xFA0BBC0D: "Drone Remote ID (ASTM F3411)",
     0x506F9A13: "NAN", 0x506F9A16: "MBO-OCE", 0x506F9A1A: "DPP",
     0x506F9A1B: "Multi-AP (EasyMesh)",
     0x506F9A1C: "OWE Transition Mode",
