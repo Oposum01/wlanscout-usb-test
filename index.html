@@ -4507,6 +4507,44 @@ document.addEventListener("pointerdown", e =>
  * the tooltip: the row saw the mouse leave and closed it again. So
  * for a moment after a tap it lets them through to the row.
  */
+/*
+ * After a tap the browser keeps a mouse pointer where the finger was,
+ * and sends mouseover, mouseenter, mousemove and mouseleave again
+ * whenever the page changes under it: each time a table is drawn
+ * anew. Those opened, moved and closed the tooltip of whatever row
+ * now lay there, so on a phone the tooltip jumped every poll round,
+ * and came back after being closed (worst in a snapshot, whose
+ * tables are drawn the most). On a touch screen only the mouse
+ * events that follow a tap right away count; the rest stop here,
+ * before any row or graph sees them.
+ */
+let lastTouchAt = 0;
+
+// A mouse that really moves is back in charge (one that only seems
+// to, standing still where a finger was, does not)
+document.addEventListener("pointermove", e =>
+{
+    if (e.pointerType === "mouse" && (e.movementX || e.movementY))
+        lastPointerType = "mouse";
+}, true);
+
+["pointerdown", "pointerup"].forEach(type =>
+    document.addEventListener(type, e =>
+    {
+        if (e.pointerType !== "mouse")
+            lastTouchAt = performance.now();
+    }, true));
+
+["mouseover", "mouseout", "mouseenter", "mouseleave", "mousemove"]
+    .forEach(type => document.addEventListener(type, e =>
+    {
+        if (lastPointerType !== "mouse" &&
+            performance.now() - lastTouchAt > 800)
+        {
+            e.stopPropagation();
+        }
+    }, true));
+
 function letTapThrough(tip)
 {
     if (lastPointerType === "mouse")
