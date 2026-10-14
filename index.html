@@ -3192,9 +3192,11 @@ class UsbLink
         this.parser = new UsbAnswerParser(a => this.answered(a));
     }
 
-    static async open()
+    // The device: chosen by the user, or one already allowed (a
+    // sensor coming back after a firmware update)
+    static async open(known = null)
     {
-        const device = await navigator.usb.requestDevice(
+        const device = known || await navigator.usb.requestDevice(
             { filters: [{ vendorId: USB_VENDOR_ESPRESSIF }] });
 
         await device.open();
@@ -3263,11 +3265,13 @@ class UsbLink
      * body (Uint8Array) it goes as "PUT url&len=..." and the bytes
      * right after the line, see usbApiRequest() in the firmware.
      */
-    request(url, body)
+    request(url, body, options = {})
     {
         return new Promise((resolve, reject) =>
         {
-            this.queue.push({ url, body, resolve, reject });
+            this.queue.push({ url, body, resolve, reject,
+                              timeout: options.timeout || 30000,
+                              progress: options.progress });
             this.next();
         });
     }
@@ -3288,7 +3292,7 @@ class UsbLink
             this.parser.reset();
             c.reject(new Error("USB: no answer for " + c.url));
             this.next();
-        }, 30000);
+        }, this.current.timeout);
 
         const c = this.current;
 
@@ -3309,8 +3313,14 @@ class UsbLink
             new TextEncoder().encode("PUT " + c.url + "\n"));
 
         for (let at = 0; at < c.body.length && !this.closed; at += 16384)
+        {
             await this.device.transferOut(this.epOut.endpointNumber,
                 c.body.subarray(at, at + 16384));
+
+            if (c.progress)
+                c.progress(Math.min(at + 16384, c.body.length),
+                           c.body.length);
+        }
     }
 
     answered(answer)
@@ -4444,7 +4454,30 @@ if (navigator.usb)
         if (usbLink && e.device === usbLink.device)
             usbLink.fail(new Error("sensor unplugged"));
     });
+
+    // After a firmware update over USB the sensor restarts and comes
+    // back as a new device; the browser already allows it, so the
+    // link is taken up again without asking
+    navigator.usb.addEventListener("connect", async e =>
+    {
+        if (!usbReconnect || usbLink ||
+            e.device.vendorId !== USB_VENDOR_ESPRESSIF)
+            return;
+
+        try
+        {
+            usbLink = await UsbLink.open(e.device);
+            showUsbState("connected over USB");
+        }
+        catch (err)
+        {
+            usbLink = null;
+        }
+    });
 }
+
+// Set while a firmware update over USB waits for the sensor
+let usbReconnect = false;
 
 
 function showTip(html, clientX, clientY)
@@ -12526,6 +12559,18 @@ function waitForFirmware(version, since)
         {
             if (!version || sys.version === version)
             {
+                // Over USB a reload would drop the link, which only a
+                // tap on USB opens again
+                if (usbReconnect)
+                {
+                    usbReconnect = false;
+                    otaBusy = false;
+                    otaStatus("v" + sys.version + " running");
+                    updateSystem();
+                    updateStatus();
+                    return;
+                }
+
                 otaStatus("v" + sys.version + " running, reloading");
                 setTimeout(() => location.reload(), 1000);
             }
@@ -12539,6 +12584,7 @@ function waitForFirmware(version, since)
             if (secs > 120)
             {
                 otaBusy = false;
+                usbReconnect = false;
                 otaStatus("no answer with v" + version + " after 2 min; " +
                           "a firmware that does not start goes back " +
                           "to the previous one on its own");
@@ -12552,12 +12598,6 @@ function waitForFirmware(version, since)
 
 function uploadFirmware()
 {
-    if (usbLink)
-    {
-        otaStatus("a firmware update needs Ethernet, not USB");
-        return;
-    }
-
     const file = document.getElementById("otaFile").files[0];
 
     if (!file)
@@ -12573,6 +12613,12 @@ function uploadFirmware()
         return;
 
     otaBusy = true;
+
+    if (usbLink)
+    {
+        uploadFirmwareUsb(file);
+        return;
+    }
 
     const form = new FormData();
 
@@ -12614,6 +12660,42 @@ function uploadFirmware()
     xhr.send(form);
 }
 
+/*
+ * The same over USB: the bytes behind "PUT /api/ota?len=N", see
+ * usbApiRequest() in the firmware. The sensor restarts, comes back
+ * as a new USB device and is taken up again (the "connect" handler);
+ * the requests from then on also confirm the new firmware, which
+ * otherwise goes back to the previous one after five minutes.
+ */
+async function uploadFirmwareUsb(file)
+{
+    try
+    {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+
+        const response = await usbLink.request(
+            "/api/ota?len=" + bytes.length, bytes,
+            { timeout: 300000,
+              progress: (done, all) => otaStatus("uploading over USB " +
+                  Math.round(100 * done / all) + " %") });
+
+        const answer = await response.json();
+
+        if (!answer.ok)
+            throw new Error(answer.error);
+
+        usbReconnect = true;
+
+        otaStatus("v" + answer.version + " written, restarting");
+        setTimeout(() => waitForFirmware(answer.version, Date.now()), 3000);
+    }
+    catch (e)
+    {
+        otaBusy = false;
+        otaStatus("refused: " + (e.message || e));
+    }
+}
+
 function rollbackFirmware()
 {
     const back = document.getElementById("otaRollback").innerText;
@@ -12622,6 +12704,7 @@ function rollbackFirmware()
         return;
 
     otaBusy = true;
+    usbReconnect = !!usbLink;
 
     api("/api/otarollback", { cache: "no-store" })
         .then(r => r.json())
