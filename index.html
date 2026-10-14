@@ -454,6 +454,12 @@ tbody tr.assocSeen.highlight {
     margin-left: auto;
 }
 
+/* In a snapshot there is no live table to empty */
+.flushBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
 .small {
     font-size: 12px;
     color: #888;
@@ -2630,6 +2636,9 @@ window.clearBuffer = clearBuffer;
  */
 function flushTable(what)
 {
+    if (snapshotView)
+        return;
+
     const name = what === "networks" ? "network" : "station";
 
     if (!confirm("Discard everything in the " + name + " table? " +
@@ -3617,6 +3626,15 @@ function showSnapshotBar()
     const bar = document.getElementById("snapshotBar");
 
     bar.classList.toggle("on", !!snapshotView);
+
+    // Flush empties the sensor's live tables, nothing a snapshot has
+    document.querySelectorAll(".flushBtn").forEach(b =>
+    {
+        b.dataset.title = b.dataset.title || b.title;
+        b.disabled = !!snapshotView;
+        b.title = snapshotView ? "Not in a snapshot: Back to live first"
+                               : b.dataset.title;
+    });
 
     if (!snapshotView)
     {
@@ -6609,7 +6627,14 @@ function networkNotes(n)
             "cannot be required in this mode, which is why it is " +
             "not flagged here"]);
     }
-    else if (sae && !n.mfpr)
+    /*
+     * WPA3 mandates PMF for an access point. An 802.11s mesh point is
+     * none: its peering is secured by SAE and AMPE, and wpa_supplicant
+     * (OpenWrt, Freifunk) turns PMF on there only when configured,
+     * outside 6 GHz it is off by default. So no red note for a mesh,
+     * only the state.
+     */
+    else if (sae && !n.mfpr && !n.mesh)
     {
         notes.push([red,
             "SAE without PSK alongside it, yet protected " +
@@ -6617,7 +6642,7 @@ function networkNotes(n)
             "mandates PMF, so this BSS is not conforming"]);
     }
 
-    if (sae && !n.mfpc)
+    if (sae && !n.mfpc && !n.mesh)
     {
         notes.push([red,
             "SAE offered while protected management frames are " +
@@ -6625,12 +6650,145 @@ function networkNotes(n)
             "protection it exists for"]);
     }
 
+    if (sae && !n.mfpc && n.mesh)
+    {
+        notes.push([blue,
+            "Mesh with SAE, management frames between the mesh " +
+            "points not protected: PMF is off, the default of " +
+            "wpa_supplicant for a mesh. The peering itself is " +
+            "secured by SAE and AMPE"]);
+    }
+
     const split = mloSplitText(n);
 
     if (split)
         notes.push([amber, split]);
 
+    /*
+     * 2.4 GHz channels lie 5 MHz apart, a 20 MHz BSS covers four of
+     * them. On 1, 6, 11 (or 1, 5, 9, 13 in Europe) neighbours either
+     * share a channel, and with it the airtime, or stay clear of
+     * each other; in between, a BSS overlaps those on both sides,
+     * hears them only as noise and collides with them.
+     */
+    if (OVERLAP_CHANNELS.includes(n.channel))
+    {
+        notes.push([amber,
+            "Channel " + n.channel + " overlaps the neighbours on the " +
+            "channels to either side: they cannot share the airtime " +
+            "and disturb each other. Better 1, 6 or 11 (in Europe also " +
+            "1, 5, 9, 13)"]);
+    }
+
+    /*
+     * 802.11b, a or g alone, no 802.11n: the lowest rates and, in
+     * 2.4 GHz, protection for every OFDM station around. An old
+     * device; nothing to configure, it has to go.
+     */
+    if (n.std > 0 && n.std <= 3)
+    {
+        notes.push([amber,
+            "No 802.11n: a " + ["802.11b", "802.11a", "802.11g"][n.std - 1] +
+            " BSS sends at the old rates and takes that much more " +
+            "airtime from everyone on the channel. Better replace the " +
+            "old device with a new one"]);
+    }
+
+    /*
+     * Open without OWE: everything goes out in clear. Not for the
+     * open half of an OWE transition pair, a mesh or a NAN cluster.
+     */
+    if (/^open$/i.test(n.sec || "") && !n.owetrans && !n.owename &&
+        !n.mesh && !isNan(n))
+    {
+        notes.push([amber,
+            "Open network: everything is sent in clear for anyone " +
+            "nearby to read. OWE (Enhanced Open) encrypts each client " +
+            "without a password; better offer it, beside an open " +
+            "transition network for older clients if need be"]);
+    }
+
+    const security = securityMismatchText(n);
+
+    if (security && !split)
+        notes.push([blue, security]);
+
+    const countries = countryMismatchText(n);
+
+    if (countries)
+        notes.push([blue, countries]);
+
     return notes;
+}
+
+
+// Neither in 1, 6, 11 nor in 1, 5, 9, 13
+const OVERLAP_CHANNELS = [2, 3, 4, 7, 8, 10, 12];
+
+// The BSSIDs of one device: sameDevice(), or addresses at most 15
+// apart, such as …:44:FF and …:45:00 (the locally administered bit
+// left out)
+function nearAddress(a, b)
+{
+    if (sameDevice(a, b))
+        return true;
+
+    const value = x =>
+    {
+        const o = x.split(":").map(h => parseInt(h, 16));
+        o[0] &= ~2;
+        return o.reduce((v, octet) => v * 256 + octet, 0);
+    };
+
+    return Math.abs(value(a) - value(b)) < 16;
+}
+
+/*
+ * The same SSID with other security on another BSSID of this device,
+ * typically WPA2 in 2.4 GHz and WPA2/WPA3 in 5 GHz: a client that
+ * changes band changes between PSK and SAE and logs in anew, and
+ * may not take the other band at all.
+ */
+function securityMismatchText(n)
+{
+    if (!n.ssid || n.ssid === "<hidden>")
+        return "";
+
+    const others = networks.filter(o => o !== n && o.ssid === n.ssid &&
+        o.sec && n.sec && o.sec !== n.sec && nearAddress(o.bssid, n.bssid));
+
+    if (!others.length)
+        return "";
+
+    const o = others[0];
+
+    return "The same SSID on channel " + o.channel + " of this device " +
+        "offers " + escapeHTML(o.sec) + ", here " + escapeHTML(n.sec) +
+        ": a client changing between them has to log in anew, some " +
+        "stay on one band. One setting for all bands avoids it";
+}
+
+/*
+ * One network, several countries: all its access points stand in
+ * one place and should announce the same Country element, which
+ * sets channels and power. A router announcing DE and its repeater
+ * CH has the region set wrong on one of them.
+ */
+function countryMismatchText(n)
+{
+    if (!n.cc || !n.ssid || n.ssid === "<hidden>")
+        return "";
+
+    const other = [...new Set(networks.filter(o => o.ssid === n.ssid &&
+        o.cc && o.cc !== n.cc).map(o => o.cc))];
+
+    if (!other.length)
+        return "";
+
+    return "Country " + escapeHTML(n.cc) + " here, " +
+        other.map(escapeHTML).join(", ") + " on other access points " +
+        "with this SSID: several countries for one network are " +
+        "implausible, one of them has its region set wrong";
 }
 
 
@@ -10287,18 +10445,6 @@ function noteScoreOf(notes)
 
 
 /*
- * The same idea as the Features column on the stations page,
- * for the AP side. Only things a client would act on: what it
- * can use for roaming, and whether management frames are
- * protected. Anything odd about the BSS lives in the notes
- * column, not here.
- */
-/*
- * An IBSS has no AP: its stations take turns sending the beacon,
- * all with the same BSSID. The ATIM window is how long they stay
- * awake after each beacon to announce buffered frames.
- */
-/*
  * BSS colour (802.11ax): HE stations ignore frames of another
  * colour for spatial reuse. An AP switches when it finds a
  * neighbour on the channel using its colour, announcing the new
@@ -10369,6 +10515,11 @@ function tsfUpText(n)
 }
 
 
+/*
+ * An IBSS has no AP: its stations take turns sending the beacon,
+ * all with the same BSSID. The ATIM window is how long they stay
+ * awake after each beacon to announce buffered frames.
+ */
 function ibssText(n)
 {
     if (!n.ibss)
@@ -10382,6 +10533,13 @@ function ibssText(n)
 }
 
 
+/*
+ * The same idea as the Features column on the stations page,
+ * for the AP side. Only things a client would act on: what it
+ * can use for roaming, and whether management frames are
+ * protected. Anything odd about the BSS lives in the notes
+ * column, not here.
+ */
 function apCapsText(n)
 {
     const flags = [];
