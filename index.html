@@ -1923,8 +1923,11 @@ Event log
 <div class="small"
      style="margin-top:8px">
 Configuration changes with the address they came from, newest
-first. Kept in a ring of 80 entries, so it survives a browser
-reload but not a restart of the device.
+first. The last 80 entries are kept on the device's flash, so they
+survive a restart and a power cut; each start is logged with its
+reason (power on, crash, watchdog, restart by the firmware). Entries
+from an earlier start have no age when the clock was not known
+then.
 </div>
 
 </div>
@@ -13232,7 +13235,9 @@ async function updateLog()
 
             tr.innerHTML =
                 "<td>" + escapeHTML(e.at) + "</td>" +
-                "<td>" + uptimeText(e.ago) + " ago</td>" +
+                // -1: an earlier boot whose time is not known
+                "<td>" + (e.ago >= 0 ? uptimeText(e.ago) + " ago" : "") +
+                "</td>" +
                 "<td>" + escapeHTML(e.who) + "</td>" +
                 "<td>" + escapeHTML(e.text) + "</td>";
 
@@ -13240,8 +13245,8 @@ async function updateLog()
         });
 
         document.getElementById("logInfo").innerText =
-            log.entries.length + " shown, " +
-            log.total + " since start";
+            log.entries.length + " shown, kept across restarts; " +
+            log.total + " since the last start";
     }
     catch (e)
     {
