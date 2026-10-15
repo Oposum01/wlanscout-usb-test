@@ -1001,7 +1001,7 @@ association requests
 </label>
 
 <label class="small"
-       title="Authentication, deauthentication, disassociation, association responses and action frames. Action frames carry the 802.11k neighbour reports and the 802.11v BSS transition requests, so this is where steering decisions become visible. These frames are not evaluated by the analyzer itself, they only go into the capture.">
+       title="Authentication, deauthentication, disassociation, association responses and action frames. Action frames carry the 802.11k neighbour reports and the 802.11v BSS transition requests, so this is where steering decisions become visible. The sensor evaluates association responses and Apple's AWDL action frames in any case; this box only decides whether these frames go into the capture.">
 <input type="checkbox"
        autocomplete="off"
        id="capOther"
@@ -2102,6 +2102,9 @@ let tipTapTimer = null;
 let historyData = null;
 let networks = [];
 let stations = [];
+
+// AWDL senders from /api/clients, for the station tooltip
+let awdlDevices = [];
 let assocHistory = null;
 
 let paused = false;
@@ -2677,6 +2680,7 @@ function flushTable(what)
         else
         {
             stations = [];
+            awdlDevices = [];
             updateClientTable();
             drawClientGraph();
             updateClients();
@@ -3679,6 +3683,7 @@ function resetViewData()
     historyData = null;
     networks = [];
     stations = [];
+    awdlDevices = [];
     assocHistory = null;
     catalogData = null;
     bleDevices = [];
@@ -5690,7 +5695,7 @@ function matchesFilter(n)
         n.wpsname ? "wps device " + n.wpsname : "",
         n.wpsdev ? "wps " + wpsDeviceText(n) : "",
         omnText(n) ? "operating mode " + omnText(n) : "",
-        isNan(n) ? "nan cluster wi-fi aware" : "",
+        isNan(n) || n.nan ? "nan cluster wi-fi aware " + nanText(n) : "",
         quietText(n) ? "quiet " + quietText(n) : "",
         aacText(n) ? "admission " + aacText(n) : "",
         apMakers(n).makers.join(" "),
@@ -7956,6 +7961,7 @@ function networkTooltip(n)
             n.nss ? n.nss + " spatial stream" + (n.nss > 1 ? "s" : "") : ""])],
         ["Basic rates", basicRateText(n)],
         ["Ad-hoc", ibssText(n)],
+        ["NAN", nanText(n)],
         ["QoS Mgmt", wfaCapaText(n.wfacapa)],
         ["BSS colour", bssColorText(n)],
         ["Multiple BSSID", n.mbssid ? "element present" : ""],
@@ -8836,7 +8842,10 @@ function clientTooltip(c, snapshot = false)
         ["Channels", chans ? chans + " (from assoc request)" : ""],
         ["Also", join([c.wmm ? "WMM" : "", c.band6 ? "6 GHz" : ""])],
         ["QoS Mgmt", wfaCapaText(c.wfacapa)],
-        ["Vendor IEs", vendorOuiText(c)]
+        ["Vendor IEs", vendorOuiText(c)],
+        ["AWDL", awdlOfStation(c.mac)
+            ? escapeHTML(awdlClassText(awdlOfStation(c.mac).cls)) +
+              " \u00b7 AWDL address " + awdlOfStation(c.mac).mac : ""]
     ]);
 
     // ---- security ---------------------------------------
@@ -10848,6 +10857,38 @@ function isNan(n)
     return /^50:6F:9A:01:/i.test(n.bssid || "");
 }
 
+/*
+ * The NAN element of a cluster beacon, [master preference, random
+ * factor, the anchor master's preference and random factor, hops to
+ * the anchor master], -1 where the attribute was missing. A master
+ * preference of 0 means the device cannot become master; 0 hops
+ * means the sender is the anchor master itself.
+ * "master preference 128, random factor 37 · anchor master 2 hops away
+ * (preference 254, random factor 9)"
+ */
+function nanText(n)
+{
+    if (!Array.isArray(n.nan))
+        return "";
+
+    const [pref, rand, amPref, amRand, hops] = n.nan;
+    const parts = [];
+
+    if (pref >= 0)
+        parts.push("master preference " + pref +
+                   (pref === 0 ? " (not master capable)" : "") +
+                   ", random factor " + rand);
+
+    if (amPref >= 0)
+        parts.push(hops === 0
+            ? "is the anchor master"
+            : "anchor master " + hops + " hop" + (hops > 1 ? "s" : "") +
+              " away (preference " + amPref + ", random factor " +
+              amRand + ")");
+
+    return parts.join(" \u00b7 ");
+}
+
 function ssidLabel(n)
 {
     return isNan(n) ? "NAN cluster (Wi-Fi Aware)" : n.ssid;
@@ -11615,7 +11656,9 @@ function stationMatches(c)
         m.makers.join(" "),
         m.chips.map(x => x + " chip").join(" "),
         (c.voui || []).map(v => v[2]).join(" "),
-        stationNotes(c, false).map(x => x[1]).join(" ")
+        stationNotes(c, false).map(x => x[1]).join(" "),
+        awdlOfStation(c.mac)
+            ? "awdl apple " + awdlClassText(awdlOfStation(c.mac).cls) : ""
     ].join(" ").toLowerCase();
 
     return terms.every(t => haystack.indexOf(t) >= 0);
@@ -11670,6 +11713,26 @@ function updateClientTable()
 
     document.getElementById("probeTabCount").innerText =
         "(" + probe.length + ")";
+}
+
+
+/*
+ * AWDL device class from the Version TLV. iPhone, iPad and Watch
+ * share one.
+ */
+function awdlClassText(cls)
+{
+    return {
+        1: "Mac (macOS)",
+        2: "iPhone, iPad or Watch (iOS, watchOS)",
+        8: "Apple TV (tvOS)"
+    }[cls] || (cls >= 0 ? "Apple, class " + cls : "Apple, class not sent");
+}
+
+// The AWDL sender that named this station as its own address
+function awdlOfStation(mac)
+{
+    return awdlDevices.find(d => d.sta === mac);
 }
 
 
@@ -11886,6 +11949,7 @@ async function updateClients()
         const result = await response.json();
 
         stations = result.clients;
+        awdlDevices = result.awdl || [];
 
         rememberStationApNames();
 
@@ -12014,7 +12078,7 @@ const VENDOR_IE_NAMES = {
     0x506F9A10: "Hotspot 2.0 Indication", 0x506F9A12: "OSEN",
     0x506F9A23: "Wi-Fi Alliance Capabilities (QoS Management)",
     0xFA0BBC0D: "Drone Remote ID (ASTM F3411)",
-    0x506F9A13: "NAN", 0x506F9A16: "MBO-OCE", 0x506F9A1A: "DPP",
+    0x506F9A13: "NAN (Wi-Fi Aware)", 0x506F9A16: "MBO-OCE", 0x506F9A1A: "DPP",
     0x506F9A1B: "Multi-AP (EasyMesh)",
     0x506F9A1C: "OWE Transition Mode",
     0x506F9A29: "RSNE Override", 0x506F9A2A: "RSNE Override 2",
