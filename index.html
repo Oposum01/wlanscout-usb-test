@@ -262,6 +262,25 @@ button.modeBtn.active {
     color: #fff;
 }
 
+/* Page choice under the event log */
+.pager {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.pager button {
+    padding: 3px 9px;
+}
+
+.pager button.active {
+    background: #1d4a63;
+    border-color: #2f7ea6;
+    color: #fff;
+}
+
 .modeView {
     display: none;
 }
@@ -398,6 +417,16 @@ table.fixedCols {
 table.fixedCols td {
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/*
+ * The IE catalog fits the width of the other tables: a long name,
+ * vendor or example wraps instead of being cut off or pushing the
+ * pcap link out of sight.
+ */
+#catalogTable td {
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 th .arrow {
@@ -1448,23 +1477,23 @@ Record, kept across reboots
 </div>
 
 
-<table class="fixedCols" style="min-width:1720px">
+<table class="fixedCols">
 
 <thead>
 <tr id="catalogHead">
-<th style="width:70px" data-sort="type">Type</th>
-<th style="width:90px" data-sort="id">Number</th>
-<th style="width:170px" data-sort="vendor">Vendor</th>
-<th style="width:64px" data-sort="sub">Subtype</th>
+<th style="width:62px" data-sort="type">Type</th>
+<th style="width:78px" data-sort="id">Number</th>
+<th style="width:160px" data-sort="vendor">Vendor</th>
+<th style="width:66px" data-sort="sub">Subtype</th>
 <th data-sort="name">Name</th>
-<th style="width:150px" data-sort="in">Seen in</th>
-<th style="width:70px" data-sort="count">Count</th>
-<th style="width:150px" data-sort="first">First seen</th>
-<th style="width:150px" data-sort="last">Last seen</th>
+<th style="width:130px" data-sort="in">Seen in</th>
+<th style="width:58px" data-sort="count">Count</th>
+<th style="width:140px" data-sort="first">First seen</th>
+<th style="width:140px" data-sort="last">Last seen</th>
 <th style="width:230px" data-sort="mac">Example</th>
-<th style="width:56px" data-sort="ch">Ch</th>
+<th style="width:44px" data-sort="ch">Ch</th>
 <th style="width:62px" data-sort="frames">Frames</th>
-<th style="width:56px">pcap</th>
+<th style="width:48px">pcap</th>
 </tr>
 </thead>
 
@@ -1680,6 +1709,48 @@ Ethernet
 <tbody id="netTable">
 </tbody>
 </table>
+
+</div>
+
+
+<div class="section">
+
+<div class="title">
+CPU
+<span class="small"
+      id="cpuInfo">
+</span>
+</div>
+
+<table>
+<tbody id="cpuTable">
+</tbody>
+</table>
+
+<div style="height:15px"></div>
+
+<table>
+<thead>
+<tr>
+<th style="cursor:default">Task</th>
+<th style="cursor:default">CPU</th>
+<th style="cursor:default">Stack never used</th>
+</tr>
+</thead>
+<tbody id="cpuTasks">
+</tbody>
+</table>
+
+<div class="small"
+     style="margin-top:8px">
+Shares of the last 10 s, from the run time FreeRTOS counts for every
+task; the load is what the idle task did not get, interrupts count
+for the task they interrupt. <i>loopTask</i> runs the parser and the
+web server, <i>wifi</i> and <i>tiT</i> (lwIP) the radio and the
+network. While loop() answers a request it reads no frames: the
+management queue fills up and, once full, frames are dropped. The
+temperature is the chip's own, not the air around it.
+</div>
 
 </div>
 
@@ -1920,10 +1991,14 @@ Event log
 </tbody>
 </table>
 
+<div class="pager"
+     id="logPages">
+</div>
+
 <div class="small"
      style="margin-top:8px">
 Configuration changes with the address they came from, newest
-first. The last 80 entries are kept on the device's flash, so they
+first, 20 to a page. The last 80 entries are kept on the device's flash, so they
 survive a restart and a power cut; each start is logged with its
 reason (power on, crash, watchdog, restart by the firmware). Entries
 from an earlier start have no age when the clock was not known
@@ -2450,6 +2525,25 @@ window.saveDefaultChannels    = saveDefaultChannels;
 let pendingCommands = [];
 let pollBusy        = false;
 let lastCommandError = "";
+
+/*
+ * A message in the status line that stays for a few seconds, as
+ * after a snapshot: until then the poll rounds leave it alone
+ * instead of clearing it in the next second.
+ */
+let statusHeldUntil = 0;
+
+function holdStatus(ms)
+{
+    statusHeldUntil = Date.now() + ms;
+}
+
+// Empties the status line, unless a message is still held
+function clearStatus()
+{
+    if (Date.now() >= statusHeldUntil)
+        document.getElementById("status").innerText = "";
+}
 
 
 async function drainCommands()
@@ -3828,6 +3922,7 @@ async function takeSnapshot()
     button.classList.add(ok ? "ok" : "bad");
 
     status.innerText = text;
+    holdStatus(5000);
 
     setTimeout(() =>
     {
@@ -3957,12 +4052,16 @@ function snapshotStatus(text, keep)
 
     status.innerText = text;
 
-    if (!keep)
-        setTimeout(() =>
-        {
-            if (status.innerText === text)
-                status.innerText = "";
-        }, 6000);
+    if (keep)
+        return;
+
+    holdStatus(6000);
+
+    setTimeout(() =>
+    {
+        if (status.innerText === text)
+            status.innerText = "";
+    }, 6000);
 }
 
 // ==========================================================
@@ -5658,6 +5757,7 @@ function matchesFilter(n)
         n.wps ? "wps" : "",
         n.ibss ? "ibss adhoc" : "",
         n.suitebad ? "broken suite " + suiteBadText(n) : "",
+        n.wpanoakm ? "wpa element without akm" : "",
         n.rid ? "drone remote id " + ridMaker(n.rid) + " " +
                 (RID_UA_TYPES[n.rid.ua] || "") + " " + (n.rid.sid || "")
               : "",
@@ -5691,6 +5791,7 @@ function matchesFilter(n)
         n.adv ? advText(n) : "",
         n.bprot ? "beacon protection" : "",
         n.apname ? "ap name " + n.apname : "",
+        n.vfw ? "firmware " + n.vfw : "",
         n.ovr ? "override " + overrideText(n) : "",
         n.p2p || n.wfd !== undefined ? "wi-fi direct p2p " + p2pText(n) : "",
         n.mbo ? mboText(n) : "",
@@ -6709,6 +6810,16 @@ function networkNotes(n)
             "skip the suite or fail to connect"]);
     }
 
+    if (n.wpanoakm)
+    {
+        notes.push([blue,
+            "WPA element without an AKM: it offers neither PSK nor " +
+            "802.1X, so no station logs in over WPA" +
+            (n.sec && n.sec !== "WPA"
+                ? "; " + escapeHTML(n.sec) + " comes from the RSN element"
+                : "")]);
+    }
+
     if (n.rid && n.rid.st === 3)
     {
         notes.push([red,
@@ -7305,7 +7416,8 @@ const WIFI_CHIP_OUIS = {
  * via Motorola and Zebra to Extreme (WiNG). Sophos APs send their
  * own OUI 7C:5A:1C with the bytes reversed, 1C:5A:7C, which has
  * no registry entry. Mojo Networks (before that AirTight) belongs
- * to Arista.
+ * to Arista, Xirrus to Cambium. DJI's element comes under
+ * 44:32:44, ASCII "D2D", which has no registry entry.
  */
 const MAKER_NAMES = {
     "000B86": "Aruba (HPE)",
@@ -7322,7 +7434,8 @@ const MAKER_NAMES = {
     "6CB227": "Sony",
     "8CBEBE": "Xiaomi",
     "001174": "Mojo Networks (Arista)", "30B62D": "Mojo Networks (Arista)",
-    "88B1E1": "Mojo Networks (Arista)", "E4D124": "Mojo Networks (Arista)"
+    "88B1E1": "Mojo Networks (Arista)", "E4D124": "Mojo Networks (Arista)",
+    "000F7D": "Xirrus (Cambium)", "443244": "DJI"
 };
 
 /*
@@ -7939,6 +8052,7 @@ function networkTooltip(n)
               ")</span>"
             : "") +
         (n.apname ? "<br>AP name: " + escapeHTML(n.apname) : "") +
+        (n.vfw ? "<br>Firmware: " + escapeHTML(n.vfw) : "") +
         "<br>" + n.bssid +
         (n.vendor ? " (" + escapeHTML(n.vendor) + ")" : "") +
         "<br>RSSI " + n.rssi + " dBm \u00b7 last seen " + n.age + " s ago";
@@ -8798,6 +8912,9 @@ function rsnSelText(sel)
 
 function clientTooltip(c, snapshot = false)
 {
+    if (c.awdlonly)
+        return awdlOnlyTooltip(c.awdlonly);
+
     const apName = apNameFor(c.bssid);
 
     const join = list => list.filter(x => x).join(" \u00b7 ");
@@ -11393,6 +11510,9 @@ function clientValue(c, key, snapshot = false)
 
     if (key === "ap")
     {
+        if (c.awdlonly)
+            return "AWDL only";
+
         if (!c.assoc && c.bssid === "00:00:00:00:00:00")
             return "-";
 
@@ -11660,8 +11780,7 @@ function stationMatches(c)
         m.chips.map(x => x + " chip").join(" "),
         (c.voui || []).map(v => v[2]).join(" "),
         stationNotes(c, false).map(x => x[1]).join(" "),
-        awdlOfStation(c.mac)
-            ? "awdl apple " + awdlClassText(awdlOfStation(c.mac).cls) : ""
+        awdlOf(c) ? "awdl apple " + awdlClassText(awdlOf(c).cls) : ""
     ].join(" ").toLowerCase();
 
     return terms.every(t => haystack.indexOf(t) >= 0);
@@ -11696,7 +11815,8 @@ function updateClientTable()
     const shown = filteredStations();
 
     const assoc = shown.filter(c => c.assoc);
-    const probe = shown.filter(c => !c.assoc);
+    const awdl  = awdlOnlyStations().filter(stationMatches);
+    const probe = shown.filter(c => !c.assoc).concat(awdl);
 
     fillClientTable("clientTable", assoc);
     fillClientTable("clientTableProbe", probe);
@@ -11709,7 +11829,8 @@ function updateClientTable()
         " with a captured association request";
 
     document.getElementById("clientProbeInfo").innerText =
-        probe.length + " stations";
+        probe.length + " stations" +
+        (awdl.length ? ", " + awdl.length + " of them over AWDL only" : "");
 
     document.getElementById("assocTabCount").innerText =
         "(" + assoc.length + ")";
@@ -11736,6 +11857,63 @@ function awdlClassText(cls)
 function awdlOfStation(mac)
 {
     return awdlDevices.find(d => d.sta === mac);
+}
+
+// The AWDL sender of a station row, an AWDL-only one included
+function awdlOf(c)
+{
+    return c.awdlonly || awdlOfStation(c.mac);
+}
+
+/*
+ * AWDL senders that name no station seen: an iPhone on no Wi-Fi
+ * network gives its AWDL address as its own and sends nothing
+ * else under it. They get a row of their own among the stations
+ * not associated, so that their tooltip can be looked at, in a
+ * snapshot too.
+ */
+function awdlOnlyStations()
+{
+    return awdlDevices
+        .filter(d => !stations.some(c => c.mac === d.sta ||
+                                         c.mac === d.mac))
+        .map(d => ({
+            mac: d.mac, vendor: "", bssid: "00:00:00:00:00:00",
+            assoc: 0, ch: d.ch, rssi: d.rssi, age: d.age,
+            seen: d.seen, up: 0, down: 0, probes: 0, std: 0, nss: 0,
+            width: 0, pcapf: 0, awdlonly: d
+        }));
+}
+
+// "10.0" from the Version TLV, major and minor in the nibbles
+function awdlVersionText(ver)
+{
+    return ver ? (ver >> 4) + "." + (ver & 15) : "";
+}
+
+function awdlOnlyTooltip(d)
+{
+    const zero = "00:00:00:00:00:00";
+
+    return "<b>" + d.mac + "</b> AWDL address<br>" +
+        "Only heard over AWDL (Apple Wireless Direct Link), no Wi-Fi " +
+        "frame of its own under this address<br>" +
+        "Channel " + d.ch + " \u00b7 RSSI " + d.rssi + " dBm \u00b7 " +
+        "last seen " + d.age + " s ago" +
+        tipSection("AWDL", [
+            ["Device", escapeHTML(awdlClassText(d.cls))],
+            ["Version", awdlVersionText(d.ver)],
+            ["Country", escapeHTML(d.cc || "")],
+            ["Wi-Fi", d.bssid && d.bssid !== zero
+                ? "on " + escapeHTML(apNameFor(d.bssid)) +
+                  (apNameFor(d.bssid) === d.bssid ? "" : " (" + d.bssid + ")") +
+                  (d.bch ? ", channel " + d.bch : "")
+                : (d.bssid ? "on no network" : "")],
+            ["Station", d.sta && d.sta !== d.mac
+                ? d.sta + " (not seen)" : ""],
+            ["Frames", d.frames + " AWDL frame" + (d.frames === 1 ? "" : "s") +
+                ", first " + d.seen + " s ago"]
+        ]);
 }
 
 
@@ -11867,7 +12045,7 @@ async function updateLive()
         // version, the status line is only for transient
         // messages now
         if (!lastCommandError)
-            document.getElementById("status").innerText = "";
+            clearStatus();
 
         drawSpectrum();
     }
@@ -12089,7 +12267,8 @@ const VENDOR_IE_NAMES = {
     0x00037F01: "Atheros Advanced Capability",
     0x00409603: "Cisco CCX version", 0x00409614: "Cisco CCX client MFP",
     0x0050F211: "Microsoft Network Cost",
-    0x5C5B3501: "Mist AP name"
+    0x5C5B3501: "Mist AP name",
+    0x00301A01: "Firmware version"
 };
 
 /*
@@ -12547,7 +12726,7 @@ async function updateBle()
 
         if (scanMode === "ble")
         {
-            document.getElementById("status").innerText = "";
+            clearStatus();
         }
 
         updateBleTable();
@@ -12657,7 +12836,7 @@ async function updateZb()
 
         if (scanMode === "zb")
         {
-            document.getElementById("status").innerText = "";
+            clearStatus();
         }
 
         applyZbScanUI();
@@ -13061,6 +13240,8 @@ async function updateSystem()
             ["DHCP client", net.dhcpstate]
         ]);
 
+        fillCpu(sys);
+
         const mem = sys.mem;
 
         fillRows("memTable", [
@@ -13215,6 +13396,136 @@ function saveSensorName()
 }
 
 
+// "820 ms", "1.9 s", "350 µs"
+function durationText(us)
+{
+    if (us >= 1000000)
+        return (us / 1000000).toFixed(1) + " s";
+
+    if (us >= 1000)
+        return Math.round(us / 1000) + " ms";
+
+    return us + " µs";
+}
+
+// One of the loop arrays: [round, request, its path, queue fill]
+function requestText(l)
+{
+    return l[1] ? durationText(l[1]) + " (" + l[2] + ")" : "-";
+}
+
+/*
+ * The CPU section of Settings from /api/system: load, temperature,
+ * longest loop() round and request, the management queue, and the
+ * tasks with their share and stack. Older firmware sends none of
+ * it, the section then says so.
+ */
+function fillCpu(sys)
+{
+    const l = sys.loop;
+    const q = l ? l.queue : 0;
+
+    document.getElementById("cpuInfo").innerText =
+        sys.cpu ? "last " + sys.cpu.win + " s" : "";
+
+    fillRows("cpuTable", !l ? [["CPU", "not reported by this firmware"]] : [
+        ["Load", sys.cpu ? (sys.cpu.load / 10).toFixed(1) + " %"
+                         : "first value after 10 s"],
+        ["Chip temperature", sys.temp !== undefined
+            ? sys.temp.toFixed(1) + " °C" : "-"],
+        ["Longest loop() round", durationText(l.win[0]) +
+            " (last 10 s), " + durationText(l.boot[0]) + " since start"],
+        ["Longest request", requestText(l.win) + " (last 10 s), " +
+            requestText(l.boot) + " since start"],
+        ["Management queue, highest fill", l.win[3] + " of " + q +
+            " (last 10 s), " + l.boot[3] + " since start" +
+            (l.boot[3] >= q ? ": it ran full, frames were dropped" : "")]
+    ]);
+
+    const tbody = document.getElementById("cpuTasks");
+
+    tbody.innerHTML = "";
+
+    ((sys.cpu && sys.cpu.tasks) || []).forEach(([name, share, stack]) =>
+    {
+        const tr = document.createElement("tr");
+
+        tr.innerHTML =
+            "<td>" + escapeHTML(name) + "</td>" +
+            "<td>" + (share / 10).toFixed(1) + " %</td>" +
+            "<td>" + stack + " bytes</td>";
+
+        tbody.appendChild(tr);
+    });
+}
+
+
+// The page of the event log shown, 0 the newest
+let logPage = 0;
+
+const LOG_PAGE_SIZE = 20;
+
+let logEntries = [];
+
+function showLogPage(page)
+{
+    const pages = Math.max(1, Math.ceil(logEntries.length / LOG_PAGE_SIZE));
+
+    logPage = Math.min(Math.max(0, page), pages - 1);
+
+    const tbody = document.getElementById("logTable");
+
+    tbody.innerHTML = "";
+
+    logEntries.slice(logPage * LOG_PAGE_SIZE, (logPage + 1) * LOG_PAGE_SIZE)
+        .forEach(e =>
+    {
+        const tr = document.createElement("tr");
+
+        tr.innerHTML =
+            "<td>" + escapeHTML(e.at) + "</td>" +
+            // -1: an earlier boot whose time is not known
+            "<td>" + (e.ago >= 0 ? uptimeText(e.ago) + " ago" : "") +
+            "</td>" +
+            "<td>" + escapeHTML(e.who) + "</td>" +
+            "<td>" + escapeHTML(e.text) + "</td>";
+
+        tbody.appendChild(tr);
+    });
+
+    // One page needs no choice
+    const pager = document.getElementById("logPages");
+
+    pager.innerHTML = "";
+
+    if (pages < 2)
+        return;
+
+    const button = (label, to, active, disabled) =>
+    {
+        const b = document.createElement("button");
+
+        b.innerText = label;
+        b.disabled = disabled;
+
+        if (active)
+            b.classList.add("active");
+
+        b.onclick = () => showLogPage(to);
+
+        pager.appendChild(b);
+    };
+
+    button("\u2039 newer", logPage - 1, false, logPage === 0);
+
+    for (let i = 0; i < pages; i++)
+        button(String(i + 1), i, i === logPage, false);
+
+    button("older \u203a", logPage + 1, false, logPage === pages - 1);
+}
+
+window.showLogPage = showLogPage;
+
 async function updateLog()
 {
     try
@@ -13225,24 +13536,10 @@ async function updateLog()
 
         const log = await response.json();
 
-        const tbody = document.getElementById("logTable");
+        // The page stays when new entries come in on top
+        logEntries = log.entries;
 
-        tbody.innerHTML = "";
-
-        log.entries.forEach(e =>
-        {
-            const tr = document.createElement("tr");
-
-            tr.innerHTML =
-                "<td>" + escapeHTML(e.at) + "</td>" +
-                // -1: an earlier boot whose time is not known
-                "<td>" + (e.ago >= 0 ? uptimeText(e.ago) + " ago" : "") +
-                "</td>" +
-                "<td>" + escapeHTML(e.who) + "</td>" +
-                "<td>" + escapeHTML(e.text) + "</td>";
-
-            tbody.appendChild(tr);
-        });
+        showLogPage(logPage);
 
         document.getElementById("logInfo").innerText =
             log.entries.length + " shown, kept across restarts; " +
