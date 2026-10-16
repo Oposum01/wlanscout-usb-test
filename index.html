@@ -1978,6 +1978,11 @@ Event log
 </span>
 </div>
 
+<div id="crashBox"
+     style="display:none; border-left:3px solid #e05050;
+            padding:4px 10px; margin-bottom:8px">
+</div>
+
 <table>
 <thead>
 <tr>
@@ -2000,7 +2005,8 @@ Event log
 Configuration changes with the address they came from, newest
 first, 20 to a page. The last 80 entries are kept on the device's flash, so they
 survive a restart and a power cut; each start is logged with its
-reason (power on, crash, watchdog, restart by the firmware). Entries
+reason (power on, crash, watchdog, restart by the firmware); after a
+crash the box above the table holds its core dump. Entries
 from an earlier start have no age when the clock was not known
 then.
 </div>
@@ -13238,9 +13244,11 @@ async function updateSystem()
                 : "down"],
             ["Failed DHCP attempts", net.dhcptries],
             ["DHCP client", net.dhcpstate]
-        ]);
+        ].concat(net.lease ? [["DHCP lease", leaseText(net.lease)]] : []));
 
         fillCpu(sys);
+
+        fillCrash(sys);
 
         const mem = sys.mem;
 
@@ -13407,6 +13415,68 @@ function durationText(us)
 
     return us + " µs";
 }
+
+// The lease as lwIP holds it: state, time, what is left, renewals
+function leaseText(l)
+{
+    const min = sec => Math.round(sec / 60) + " min";
+    let text = l.state;
+
+    if (l.time !== undefined)
+        text += ", " + min(l.time) + " from " + l.server +
+                ", " + min(l.left) + " left";
+
+    if (l.renew !== undefined)
+        text += ", next renewal in " + min(l.renew);
+
+    return text + ", renewed " +
+           (l.renewals === 1 ? "once" : l.renewals + " times") +
+           " since start";
+}
+
+/*
+ * The core dump the last crash left in flash, until it is
+ * deleted. It is decoded on a PC with esp-coredump and the .elf
+ * of the firmware that crashed.
+ */
+function fillCrash(sys)
+{
+    const box = document.getElementById("crashBox");
+    const c   = sys.crash;
+
+    if (!c)
+    {
+        box.style.display = "none";
+        box.innerHTML = "";
+        return;
+    }
+
+    box.style.display = "";
+    box.innerHTML =
+        "<b>Core dump of the last crash</b><br>" +
+        escapeHTML(c.cause) + " in task " + escapeHTML(c.task) +
+        " at " + escapeHTML(c.pc) + " (return address " +
+        escapeHTML(c.ra) + ")<br>" +
+        "<span class='small'>" +
+        (c.same ? "Written by the firmware running now"
+                : "Written by another firmware than the one running now") +
+        " (ELF " + escapeHTML(c.elf) + "), " + kB(c.size) +
+        ". Decode it with esp-coredump and the .elf of that firmware." +
+        "</span><br>" +
+        "<button onclick=\"apiDownload('/api/coredump')\">" +
+        "Download core dump</button> " +
+        "<button onclick='deleteCoreDump()'>Delete</button>";
+}
+
+function deleteCoreDump()
+{
+    if (!confirm("Delete the core dump?"))
+        return;
+
+    queueCommand("/api/coredump?erase=1", () => updateSystem());
+}
+
+window.deleteCoreDump = deleteCoreDump;
 
 // One of the loop arrays: [round, request, its path, queue fill]
 function requestText(l)
